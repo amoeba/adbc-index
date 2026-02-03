@@ -36,6 +36,20 @@ pub struct LibraryRecord {
     pub artifact_url: String,
 }
 
+/// A driver record - one row per driver
+#[derive(Debug, Clone)]
+pub struct DriverRecord {
+    pub name: String,
+    pub repo_owner: String,
+    pub repo_name: String,
+    pub release_count: i64,
+    pub library_count: i64,
+    pub first_release_date: DateTime<Utc>,
+    pub first_release_version: Option<String>,
+    pub latest_release_date: DateTime<Utc>,
+    pub latest_release_version: Option<String>,
+}
+
 impl ReleaseRecord {
     /// Parse version from tag (handles complex tags like "go/v0.2.0")
     /// Returns version in format "0.1.2" (without 'v' prefix)

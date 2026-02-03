@@ -25,6 +25,8 @@ enum Commands {
     Sync,
     /// Analyze cache directory and create parquet reports
     Report,
+    /// Generate HTML dashboard from parquet files
+    Html,
 }
 
 #[tokio::main]
@@ -34,6 +36,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Sync => sync().await,
         Commands::Report => report().await,
+        Commands::Html => html().await,
     }
 }
 
@@ -253,13 +256,18 @@ async fn report() -> Result<()> {
     println!();
 
     use std::collections::{HashMap, HashSet};
-    use models::LibraryRecord;
+    use models::{LibraryRecord, DriverRecord};
 
-    // Track releases and libraries separately
+    // Track releases, libraries, and drivers separately
     let mut library_records = Vec::new();
     let mut release_data: HashMap<(String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>)> = HashMap::new();
+    let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
     for driver in &drivers {
+        driver_stats.insert(
+            driver.name.clone(),
+            (driver.owner.clone(), driver.repo.clone(), 0)
+        );
         println!("📦 Fetching releases for {}", driver.name);
         println!("   Repository: {}/{}", driver.owner, driver.repo);
 
@@ -310,6 +318,11 @@ async fn report() -> Result<()> {
                                     artifact_url: asset.browser_download_url.clone(),
                                 });
 
+                                // Track library count for driver
+                                if let Some(stats) = driver_stats.get_mut(&driver.name) {
+                                    stats.2 += 1;
+                                }
+
                                 // Aggregate release data
                                 let key = (driver.name.clone(), tag.clone());
                                 release_data.entry(key)
@@ -336,7 +349,61 @@ async fn report() -> Result<()> {
 
     println!("📊 Total library records: {}", library_records.len());
     println!("📊 Total releases: {}", release_data.len());
+    println!("📊 Total drivers: {}", driver_stats.len());
     println!();
+
+    // Calculate first and latest release for each driver
+    let mut driver_first_latest: HashMap<String, (chrono::DateTime<chrono::Utc>, Option<String>, chrono::DateTime<chrono::Utc>, Option<String>)> = HashMap::new();
+
+    for ((name, _), (version, published_date, _, _, _)) in &release_data {
+        driver_first_latest
+            .entry(name.clone())
+            .and_modify(|(first_date, first_ver, latest_date, latest_ver)| {
+                if published_date < first_date {
+                    *first_date = *published_date;
+                    *first_ver = version.clone();
+                }
+                if published_date > latest_date {
+                    *latest_date = *published_date;
+                    *latest_ver = version.clone();
+                }
+            })
+            .or_insert((*published_date, version.clone(), *published_date, version.clone()));
+    }
+
+    // Create driver records
+    let mut driver_records: Vec<DriverRecord> = driver_stats
+        .iter()
+        .map(|(name, (owner, repo, lib_count))| {
+            // Count releases for this driver
+            let release_count = release_data
+                .keys()
+                .filter(|(driver_name, _)| driver_name == name)
+                .count() as i64;
+
+            // Get first and latest release info
+            let (first_release_date, first_release_version, latest_release_date, latest_release_version) =
+                driver_first_latest.get(name).cloned().unwrap_or_else(|| {
+                    let now = chrono::Utc::now();
+                    (now, None, now, None)
+                });
+
+            DriverRecord {
+                name: name.clone(),
+                repo_owner: owner.clone(),
+                repo_name: repo.clone(),
+                release_count,
+                library_count: *lib_count as i64,
+                first_release_date,
+                first_release_version,
+                latest_release_date,
+                latest_release_version,
+            }
+        })
+        .collect();
+
+    // Sort by name
+    driver_records.sort_by(|a, b| a.name.cmp(&b.name));
 
     // Convert release_data to ReleaseRecords
     let mut release_records: Vec<models::ReleaseRecord> = release_data
@@ -364,6 +431,16 @@ async fn report() -> Result<()> {
         a.name.cmp(&b.name).then_with(|| a.release_tag.cmp(&b.release_tag))
     });
 
+    // Write drivers.parquet
+    let drivers_output = PathBuf::from("drivers.parquet");
+    println!("💾 Writing to {:?}", drivers_output);
+    let mut drivers_writer = parquet::DriversWriter::new(&drivers_output)?;
+    for record in driver_records {
+        drivers_writer.add_record(record)?;
+    }
+    drivers_writer.close()?;
+    println!("   ✓ Written {} drivers", driver_stats.len());
+
     // Write releases.parquet
     let releases_output = PathBuf::from("releases.parquet");
     println!("💾 Writing to {:?}", releases_output);
@@ -387,6 +464,7 @@ async fn report() -> Result<()> {
     println!("✨ Done!");
     println!();
     println!("Output files:");
+    println!("  - {:?}", drivers_output);
     println!("  - {:?}", releases_output);
     println!("  - {:?}", libraries_output);
 
@@ -524,5 +602,183 @@ fn is_driver_artifact(file_format: &Option<String>) -> bool {
         None => false,
         Some(_) => false,
     }
+}
+
+async fn html() -> Result<()> {
+    use std::process::Command;
+
+    println!("🌐 dash html - Generating HTML dashboard");
+    println!();
+
+    let drivers_path = PathBuf::from("drivers.parquet");
+    let releases_path = PathBuf::from("releases.parquet");
+    let libraries_path = PathBuf::from("libraries.parquet");
+    let output_dir = PathBuf::from("output");
+    let output_file = output_dir.join("index.html");
+
+    // Check if parquet files exist
+    if !drivers_path.exists() {
+        return Err(error::DashError::Config(
+            "drivers.parquet not found. Run 'dash report' first.".to_string(),
+        ));
+    }
+    if !releases_path.exists() {
+        return Err(error::DashError::Config(
+            "releases.parquet not found. Run 'dash report' first.".to_string(),
+        ));
+    }
+    if !libraries_path.exists() {
+        return Err(error::DashError::Config(
+            "libraries.parquet not found. Run 'dash report' first.".to_string(),
+        ));
+    }
+
+    // Create output directory
+    std::fs::create_dir_all(&output_dir)?;
+
+    println!("📖 Reading parquet files with DuckDB...");
+
+    // Use DuckDB to convert parquet to CSV
+    let drivers_csv_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT * FROM read_parquet('drivers.parquet')")
+        .output()?;
+
+    let releases_csv_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT * FROM read_parquet('releases.parquet')")
+        .output()?;
+
+    let libraries_csv_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT * FROM read_parquet('libraries.parquet')")
+        .output()?;
+
+    if !drivers_csv_output.status.success() {
+        return Err(error::DashError::Config(
+            format!("DuckDB error reading drivers: {}", String::from_utf8_lossy(&drivers_csv_output.stderr))
+        ));
+    }
+
+    if !releases_csv_output.status.success() {
+        return Err(error::DashError::Config(
+            format!("DuckDB error reading releases: {}", String::from_utf8_lossy(&releases_csv_output.stderr))
+        ));
+    }
+
+    if !libraries_csv_output.status.success() {
+        return Err(error::DashError::Config(
+            format!("DuckDB error reading libraries: {}", String::from_utf8_lossy(&libraries_csv_output.stderr))
+        ));
+    }
+
+    let drivers_csv = String::from_utf8_lossy(&drivers_csv_output.stdout);
+    let releases_csv = String::from_utf8_lossy(&releases_csv_output.stdout);
+    let libraries_csv = String::from_utf8_lossy(&libraries_csv_output.stdout);
+
+    println!("🔨 Generating HTML...");
+
+    // Generate HTML
+    let mut html = String::new();
+    html.push_str("<!DOCTYPE html>\n");
+    html.push_str("<html>\n");
+    html.push_str("<head>\n");
+    html.push_str("<title>ADBC Driver Dashboard</title>\n");
+    html.push_str("</head>\n");
+    html.push_str("<body>\n");
+    html.push_str("<h1>ADBC Driver Dashboard</h1>\n\n");
+
+    // Drivers table
+    html.push_str("<h2>Drivers</h2>\n");
+    html.push_str(&csv_to_html_table(&drivers_csv));
+    html.push_str("\n");
+
+    // Releases table
+    html.push_str("<h2>Releases</h2>\n");
+    html.push_str(&csv_to_html_table(&releases_csv));
+    html.push_str("\n");
+
+    // Libraries table
+    html.push_str("<h2>Libraries</h2>\n");
+    html.push_str(&csv_to_html_table(&libraries_csv));
+    html.push_str("\n");
+
+    html.push_str("</body>\n");
+    html.push_str("</html>\n");
+
+    // Write HTML file
+    std::fs::write(&output_file, html)?;
+
+    println!("✨ Done!");
+    println!();
+    println!("Output file: {:?}", output_file);
+
+    Ok(())
+}
+
+fn csv_to_html_table(csv: &str) -> String {
+    let mut html = String::new();
+    html.push_str("<table border=\"1\">\n");
+
+    let mut lines = csv.lines();
+
+    // Header row
+    if let Some(header) = lines.next() {
+        html.push_str("<tr>\n");
+        for cell in parse_csv_line(header) {
+            html.push_str(&format!("<th>{}</th>\n", cell));
+        }
+        html.push_str("</tr>\n");
+    }
+
+    // Data rows
+    for line in lines {
+        html.push_str("<tr>\n");
+        for cell in parse_csv_line(line) {
+            html.push_str(&format!("<td>{}</td>\n", cell));
+        }
+        html.push_str("</tr>\n");
+    }
+
+    html.push_str("</table>\n");
+    html
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut current_cell = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                // Check if this is an escaped quote
+                if in_quotes && chars.peek() == Some(&'"') {
+                    current_cell.push('"');
+                    chars.next(); // Skip the second quote
+                } else {
+                    in_quotes = !in_quotes;
+                }
+            }
+            ',' if !in_quotes => {
+                cells.push(current_cell.clone());
+                current_cell.clear();
+            }
+            _ => {
+                current_cell.push(c);
+            }
+        }
+    }
+
+    // Push the last cell
+    if !current_cell.is_empty() || !cells.is_empty() {
+        cells.push(current_cell);
+    }
+
+    cells
 }
 
