@@ -1,4 +1,4 @@
-use crate::error::{DashError, Result};
+use crate::error::{AdbcIndexError, Result};
 use flate2::read::GzDecoder;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -62,7 +62,7 @@ impl DownloadManager {
         for handle in handles {
             match handle.await {
                 Ok(result) => results.push(result),
-                Err(e) => results.push(Err(DashError::Download {
+                Err(e) => results.push(Err(AdbcIndexError::Download {
                     url: "unknown".to_string(),
                     reason: e.to_string(),
                 })),
@@ -126,7 +126,7 @@ impl DownloadManager {
         let response = self.client.get(&task.url).send().await?;
 
         if !response.status().is_success() {
-            return Err(DashError::Download {
+            return Err(AdbcIndexError::Download {
                 url: task.url.clone(),
                 reason: format!("HTTP {}", response.status()),
             });
@@ -149,7 +149,7 @@ impl DownloadManager {
         let mut downloaded = 0u64;
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| DashError::Download {
+            let chunk = chunk_result.map_err(|e| AdbcIndexError::Download {
                 url: task.url.clone(),
                 reason: e.to_string(),
             })?;
@@ -209,7 +209,7 @@ async fn extract_tar_gz(archive_path: &Path) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         // Get the directory where the archive is located
         let extract_dir = archive_path.parent().ok_or_else(|| {
-            DashError::Download {
+            AdbcIndexError::Download {
                 url: "".to_string(),
                 reason: "Invalid archive path".to_string(),
             }
@@ -222,10 +222,10 @@ async fn extract_tar_gz(archive_path: &Path) -> Result<()> {
 
         archive.unpack(extract_dir)?;
 
-        Ok::<(), DashError>(())
+        Ok::<(), AdbcIndexError>(())
     })
     .await
-    .map_err(|e| DashError::Download {
+    .map_err(|e| AdbcIndexError::Download {
         url: "".to_string(),
         reason: format!("Extraction task failed: {}", e),
     })?

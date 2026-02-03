@@ -1,4 +1,4 @@
-use crate::error::{DashError, Result};
+use crate::error::{AdbcIndexError, Result};
 use crate::github::types::{GitHubError, Release};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 
@@ -13,7 +13,7 @@ pub struct GitHubClient {
 impl GitHubClient {
     pub fn new(token: Option<String>) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("dash-cli"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("adbc-index"));
         headers.insert(
             ACCEPT,
             HeaderValue::from_static("application/vnd.github.v3+json"),
@@ -54,7 +54,7 @@ impl GitHubClient {
                     Err(_) => error_body,
                 };
 
-                return Err(DashError::GitHubApi {
+                return Err(AdbcIndexError::GitHubApi {
                     status: status.as_u16(),
                     message: error_msg,
                 });

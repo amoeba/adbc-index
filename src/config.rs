@@ -1,4 +1,4 @@
-use crate::error::{DashError, Result};
+use crate::error::{AdbcIndexError, Result};
 use crate::models::DriverConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
     let url = url.trim_end_matches('/');
 
     if !url.starts_with("https://github.com/") {
-        return Err(DashError::InvalidUrl(format!(
+        return Err(AdbcIndexError::InvalidUrl(format!(
             "URL must start with https://github.com/: {}",
             url
         )));
@@ -41,7 +41,7 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
     let parts: Vec<&str> = path.split('/').collect();
 
     if parts.len() < 2 {
-        return Err(DashError::InvalidUrl(format!(
+        return Err(AdbcIndexError::InvalidUrl(format!(
             "URL must contain owner and repo: {}",
             url
         )));

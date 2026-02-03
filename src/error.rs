@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum DashError {
+pub enum AdbcIndexError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -36,4 +36,4 @@ pub enum DashError {
     Download { url: String, reason: String },
 }
 
-pub type Result<T> = std::result::Result<T, DashError>;
+pub type Result<T> = std::result::Result<T, AdbcIndexError>;

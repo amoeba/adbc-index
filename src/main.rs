@@ -12,8 +12,8 @@ use models::ReleaseRecord;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "dash")]
-#[command(about = "ADBC Driver Release Artifact Downloader and Statistics Handler", long_about = None)]
+#[command(name = "adbc-index")]
+#[command(about = "ADBC Index - Index and analyze ADBC driver releases and libraries", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -49,7 +49,7 @@ async fn sync() -> Result<()> {
     // Get GitHub token (optional)
     let github_token = std::env::var("GITHUB_TOKEN").ok();
 
-    println!("🚀 dash sync - Syncing with GitHub releases");
+    println!("🚀 adbc-index sync - Syncing with GitHub releases");
     println!();
 
     // Load configuration
@@ -159,7 +159,7 @@ async fn sync() -> Result<()> {
 
     // Fail if any driver failed to fetch
     if driver_fetch_errors > 0 {
-        return Err(error::DashError::Config(
+        return Err(error::AdbcIndexError::Config(
             format!("Failed to fetch releases from {} driver(s). Sync aborted.", driver_fetch_errors)
         ));
     }
@@ -202,7 +202,7 @@ async fn sync() -> Result<()> {
         println!("Cache directory: {:?}", cache_dir);
 
         if error_count > 0 {
-            return Err(error::DashError::Download {
+            return Err(error::AdbcIndexError::Download {
                 url: "multiple".to_string(),
                 reason: format!("{} artifact(s) failed to download", error_count),
             });
@@ -212,6 +212,40 @@ async fn sync() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Load cached releases from disk for a driver
+fn load_cached_releases(cache_dir: &PathBuf, driver_name: &str) -> Result<Vec<github::types::Release>> {
+    let driver_cache = cache_dir.join(driver_name);
+    if !driver_cache.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut releases = Vec::new();
+
+    // Iterate through each tag directory
+    for entry in std::fs::read_dir(&driver_cache)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let release_json_path = entry.path().join("release.json");
+        if !release_json_path.exists() {
+            continue;
+        }
+
+        // Read and deserialize release.json
+        let json_content = std::fs::read_to_string(&release_json_path)?;
+        match serde_json::from_str::<github::types::Release>(&json_content) {
+            Ok(release) => releases.push(release),
+            Err(e) => {
+                eprintln!("⚠️  Failed to parse {}: {}", release_json_path.display(), e);
+            }
+        }
+    }
+
+    Ok(releases)
 }
 
 async fn report() -> Result<()> {
@@ -224,35 +258,13 @@ async fn report() -> Result<()> {
     let config = PathBuf::from("drivers.toml");
     let cache_dir = PathBuf::from("cache");
 
-    // Get GitHub token (optional)
-    let github_token = std::env::var("GITHUB_TOKEN").ok();
-
-    println!("📊 dash report - Generating parquet reports");
+    println!("📊 adbc-index report - Generating parquet reports");
     println!();
 
     // Load configuration
     println!("📋 Loading configuration from {:?}", config);
     let drivers = config::load_config(&config)?;
     println!("   Found {} drivers", drivers.len());
-    println!();
-
-    // Create GitHub client
-    let gh_client = if let Some(ref token) = github_token {
-        println!("🔑 Using GitHub token for authentication");
-        println!();
-        github::GitHubClient::new(Some(token.clone()))?
-    } else {
-        println!("⚠️  No GitHub token found - using unauthenticated requests (lower rate limits)");
-        println!();
-        github::GitHubClient::new(None)?
-    };
-
-    // Check rate limit
-    let rate_limit = gh_client.check_rate_limit().await?;
-    println!(
-        "⚡ GitHub API Rate Limit: {}/{}",
-        rate_limit.remaining, rate_limit.limit
-    );
     println!();
 
     use std::collections::{HashMap, HashSet};
@@ -268,12 +280,11 @@ async fn report() -> Result<()> {
             driver.name.clone(),
             (driver.owner.clone(), driver.repo.clone(), 0)
         );
-        println!("📦 Fetching releases for {}", driver.name);
-        println!("   Repository: {}/{}", driver.owner, driver.repo);
+        println!("📦 Loading cached releases for {}", driver.name);
 
-        match gh_client.fetch_releases(&driver.owner, &driver.repo).await {
+        match load_cached_releases(&cache_dir, &driver.name) {
             Ok(releases) => {
-                println!("   Found {} releases", releases.len());
+                println!("   Found {} releases in cache", releases.len());
 
                 for release in &releases {
                     let release_url = release.html_url.clone();
@@ -339,7 +350,7 @@ async fn report() -> Result<()> {
                 println!("   Total artifacts: {}", total_artifacts);
             }
             Err(e) => {
-                eprintln!("   ⚠️  Error fetching releases: {}", e);
+                eprintln!("   ⚠️  Error loading cached releases: {}", e);
                 eprintln!("   Continuing with other drivers...");
             }
         }
@@ -607,7 +618,7 @@ fn is_driver_artifact(file_format: &Option<String>) -> bool {
 async fn html() -> Result<()> {
     use std::process::Command;
 
-    println!("🌐 dash html - Generating HTML dashboard");
+    println!("🌐 adbc-index html - Generating HTML dashboard");
     println!();
 
     let drivers_path = PathBuf::from("drivers.parquet");
@@ -618,18 +629,18 @@ async fn html() -> Result<()> {
 
     // Check if parquet files exist
     if !drivers_path.exists() {
-        return Err(error::DashError::Config(
-            "drivers.parquet not found. Run 'dash report' first.".to_string(),
+        return Err(error::AdbcIndexError::Config(
+            "drivers.parquet not found. Run 'adbc-index report' first.".to_string(),
         ));
     }
     if !releases_path.exists() {
-        return Err(error::DashError::Config(
-            "releases.parquet not found. Run 'dash report' first.".to_string(),
+        return Err(error::AdbcIndexError::Config(
+            "releases.parquet not found. Run 'adbc-index report' first.".to_string(),
         ));
     }
     if !libraries_path.exists() {
-        return Err(error::DashError::Config(
-            "libraries.parquet not found. Run 'dash report' first.".to_string(),
+        return Err(error::AdbcIndexError::Config(
+            "libraries.parquet not found. Run 'adbc-index report' first.".to_string(),
         ));
     }
 
@@ -658,19 +669,19 @@ async fn html() -> Result<()> {
         .output()?;
 
     if !drivers_csv_output.status.success() {
-        return Err(error::DashError::Config(
+        return Err(error::AdbcIndexError::Config(
             format!("DuckDB error reading drivers: {}", String::from_utf8_lossy(&drivers_csv_output.stderr))
         ));
     }
 
     if !releases_csv_output.status.success() {
-        return Err(error::DashError::Config(
+        return Err(error::AdbcIndexError::Config(
             format!("DuckDB error reading releases: {}", String::from_utf8_lossy(&releases_csv_output.stderr))
         ));
     }
 
     if !libraries_csv_output.status.success() {
-        return Err(error::DashError::Config(
+        return Err(error::AdbcIndexError::Config(
             format!("DuckDB error reading libraries: {}", String::from_utf8_lossy(&libraries_csv_output.stderr))
         ));
     }

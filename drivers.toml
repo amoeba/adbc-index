@@ -1,2 +1,11 @@
 [drivers]
+bigquery = "https://github.com/adbc-drivers/bigquery"
+databricks = "https://github.com/adbc-drivers/databricks"
+duckdb = "https://github.com/adbc-drivers/duckdb"
+flightsql = "https://github.com/adbc-drivers/flightsql"
+mssql = "https://github.com/adbc-drivers/mssql"
 mysql = "https://github.com/adbc-drivers/mysql"
+postgresql = "https://github.com/adbc-drivers/postgresql"
+snowflake = "https://github.com/adbc-drivers/snowflake"
+sqlite = "https://github.com/adbc-drivers/sqlite"
+trino = "https://github.com/adbc-drivers/trino"
