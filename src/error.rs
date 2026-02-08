@@ -20,6 +20,9 @@ pub enum AdbcIndexError {
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 
+    #[error("Binary parsing error: {0}")]
+    Goblin(#[from] goblin::error::Error),
+
     #[error("Invalid GitHub URL: {0}")]
     InvalidUrl(String),
 

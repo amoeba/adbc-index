@@ -5,6 +5,7 @@ mod error;
 mod github;
 mod models;
 mod parquet;
+mod symbols;
 
 use clap::{Parser, Subcommand};
 use error::Result;
@@ -268,12 +269,16 @@ async fn report() -> Result<()> {
     println!();
 
     use std::collections::{HashMap, HashSet};
-    use models::{LibraryRecord, DriverRecord};
+    use models::{LibraryRecord, DriverRecord, SymbolRecord};
 
-    // Track releases, libraries, and drivers separately
+    // Track releases, libraries, drivers, and symbols separately
     let mut library_records = Vec::new();
+    let mut symbol_records = Vec::new();
     let mut release_data: HashMap<(String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>)> = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
+
+    // Configure symbol filter - only extract symbols starting with "Adbc"
+    let symbol_filter = symbols::SymbolFilter::default();
 
     for driver in &drivers {
         driver_stats.insert(
@@ -322,12 +327,35 @@ async fn report() -> Result<()> {
                                     published_date,
                                     os: os.clone(),
                                     arch: arch.clone(),
-                                    library_name: lib_info.name,
+                                    library_name: lib_info.name.clone(),
                                     library_size_bytes: lib_info.size,
-                                    library_sha256: lib_info.sha256.unwrap_or_default(),
+                                    library_sha256: lib_info.sha256.clone().unwrap_or_default(),
                                     artifact_name: asset.name.clone(),
                                     artifact_url: asset.browser_download_url.clone(),
                                 });
+
+                                // Extract symbols from the library if we have a path
+                                if let Some(ref lib_path) = lib_info.path {
+                                    match symbols::extract_symbols(lib_path, &symbol_filter) {
+                                        Ok(syms) => {
+                                            for (idx, symbol) in syms.into_iter().enumerate() {
+                                                symbol_records.push(SymbolRecord {
+                                                    name: driver.name.clone(),
+                                                    release_tag: tag.clone(),
+                                                    version: version.clone(),
+                                                    os: os.clone(),
+                                                    arch: arch.clone(),
+                                                    library_name: lib_info.name.clone(),
+                                                    symbol,
+                                                    symbol_index: idx as i64,
+                                                });
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("   ⚠️  Failed to extract symbols from {}: {}", lib_info.name, e);
+                                        }
+                                    }
+                                }
 
                                 // Track library count for driver
                                 if let Some(stats) = driver_stats.get_mut(&driver.name) {
@@ -359,6 +387,7 @@ async fn report() -> Result<()> {
     }
 
     println!("📊 Total library records: {}", library_records.len());
+    println!("📊 Total symbol records: {}", symbol_records.len());
     println!("📊 Total releases: {}", release_data.len());
     println!("📊 Total drivers: {}", driver_stats.len());
     println!();
@@ -471,6 +500,15 @@ async fn report() -> Result<()> {
     }
     libraries_writer.close()?;
 
+    // Write symbols.parquet
+    let symbols_output = PathBuf::from("symbols.parquet");
+    println!("💾 Writing to {:?}", symbols_output);
+    let mut symbols_writer = parquet::SymbolsWriter::new(&symbols_output)?;
+    for record in symbol_records {
+        symbols_writer.add_record(record)?;
+    }
+    symbols_writer.close()?;
+
     println!();
     println!("✨ Done!");
     println!();
@@ -478,6 +516,7 @@ async fn report() -> Result<()> {
     println!("  - {:?}", drivers_output);
     println!("  - {:?}", releases_output);
     println!("  - {:?}", libraries_output);
+    println!("  - {:?}", symbols_output);
 
     Ok(())
 }
@@ -488,6 +527,7 @@ struct LibraryInfo {
     name: String,
     size: i64,
     sha256: Option<String>,
+    path: Option<std::path::PathBuf>,
 }
 
 /// Extract archive and find the shared library inside
@@ -500,7 +540,7 @@ fn extract_and_find_library(
     use flate2::read::GzDecoder;
     use sha2::{Digest, Sha256};
     use std::fs::File;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use tar::Archive;
     use zip::ZipArchive;
 
@@ -513,6 +553,13 @@ fn extract_and_find_library(
     if !artifact_path.exists() {
         return None;
     }
+
+    // Create temp directory for extracted libraries
+    let extract_dir = cache_dir
+        .join(driver_name)
+        .join(&sanitized_tag)
+        .join("extracted");
+    std::fs::create_dir_all(&extract_dir).ok()?;
 
     // Determine archive type and extract
     if artifact_name.ends_with(".tar.gz") || artifact_name.ends_with(".tgz") {
@@ -530,15 +577,20 @@ fn extract_and_find_library(
             if filename.ends_with(".so") || filename.ends_with(".dylib") || filename.ends_with(".dll") {
                 let size = entry.size() as i64;
 
-                // Compute SHA256
+                // Extract library to temp directory
+                let lib_path = extract_dir.join(&filename);
+                let mut out_file = File::create(&lib_path).ok()?;
                 let mut hasher = Sha256::new();
                 let mut buffer = vec![0; 8192];
+
+                // Read, hash, and write simultaneously
                 loop {
                     let n = entry.read(&mut buffer).ok()?;
                     if n == 0 {
                         break;
                     }
                     hasher.update(&buffer[..n]);
+                    out_file.write_all(&buffer[..n]).ok()?;
                 }
                 let sha256 = format!("{:x}", hasher.finalize());
 
@@ -546,6 +598,7 @@ fn extract_and_find_library(
                     name: filename,
                     size,
                     sha256: Some(sha256),
+                    path: Some(lib_path),
                 });
             }
         }
@@ -562,15 +615,20 @@ fn extract_and_find_library(
             if filename.ends_with(".so") || filename.ends_with(".dylib") || filename.ends_with(".dll") {
                 let size = file.size() as i64;
 
-                // Compute SHA256
+                // Extract library to temp directory
+                let lib_path = extract_dir.join(&filename);
+                let mut out_file = File::create(&lib_path).ok()?;
                 let mut hasher = Sha256::new();
                 let mut buffer = vec![0; 8192];
+
+                // Read, hash, and write simultaneously
                 loop {
                     let n = file.read(&mut buffer).ok()?;
                     if n == 0 {
                         break;
                     }
                     hasher.update(&buffer[..n]);
+                    out_file.write_all(&buffer[..n]).ok()?;
                 }
                 let sha256 = format!("{:x}", hasher.finalize());
 
@@ -578,6 +636,7 @@ fn extract_and_find_library(
                     name: filename,
                     size,
                     sha256: Some(sha256),
+                    path: Some(lib_path),
                 });
             }
         }
@@ -624,7 +683,8 @@ async fn html() -> Result<()> {
     let drivers_path = PathBuf::from("drivers.parquet");
     let releases_path = PathBuf::from("releases.parquet");
     let libraries_path = PathBuf::from("libraries.parquet");
-    let output_dir = PathBuf::from("output");
+    let symbols_path = PathBuf::from("symbols.parquet");
+    let output_dir = PathBuf::from("dist");
     let output_file = output_dir.join("index.html");
 
     // Check if parquet files exist
@@ -641,6 +701,11 @@ async fn html() -> Result<()> {
     if !libraries_path.exists() {
         return Err(error::AdbcIndexError::Config(
             "libraries.parquet not found. Run 'adbc-index report' first.".to_string(),
+        ));
+    }
+    if !symbols_path.exists() {
+        return Err(error::AdbcIndexError::Config(
+            "symbols.parquet not found. Run 'adbc-index report' first.".to_string(),
         ));
     }
 
@@ -668,6 +733,12 @@ async fn html() -> Result<()> {
         .arg("SELECT * FROM read_parquet('libraries.parquet')")
         .output()?;
 
+    let symbols_csv_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT * FROM read_parquet('symbols.parquet')")
+        .output()?;
+
     if !drivers_csv_output.status.success() {
         return Err(error::AdbcIndexError::Config(
             format!("DuckDB error reading drivers: {}", String::from_utf8_lossy(&drivers_csv_output.stderr))
@@ -686,9 +757,16 @@ async fn html() -> Result<()> {
         ));
     }
 
+    if !symbols_csv_output.status.success() {
+        return Err(error::AdbcIndexError::Config(
+            format!("DuckDB error reading symbols: {}", String::from_utf8_lossy(&symbols_csv_output.stderr))
+        ));
+    }
+
     let drivers_csv = String::from_utf8_lossy(&drivers_csv_output.stdout);
     let releases_csv = String::from_utf8_lossy(&releases_csv_output.stdout);
     let libraries_csv = String::from_utf8_lossy(&libraries_csv_output.stdout);
+    let symbols_csv = String::from_utf8_lossy(&symbols_csv_output.stdout);
 
     println!("🔨 Generating HTML...");
 
@@ -715,6 +793,11 @@ async fn html() -> Result<()> {
     // Libraries table
     html.push_str("<h2>Libraries</h2>\n");
     html.push_str(&csv_to_html_table(&libraries_csv));
+    html.push_str("\n");
+
+    // Symbols table
+    html.push_str("<h2>Symbols</h2>\n");
+    html.push_str(&csv_to_html_table(&symbols_csv));
     html.push_str("\n");
 
     html.push_str("</body>\n");

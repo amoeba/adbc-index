@@ -50,6 +50,19 @@ pub struct DriverRecord {
     pub latest_release_version: Option<String>,
 }
 
+/// A symbol record - one row per exported symbol
+#[derive(Debug, Clone)]
+pub struct SymbolRecord {
+    pub name: String,
+    pub release_tag: String,
+    pub version: Option<String>,
+    pub os: String,
+    pub arch: String,
+    pub library_name: String,
+    pub symbol: String,
+    pub symbol_index: i64,
+}
+
 impl ReleaseRecord {
     /// Parse version from tag (handles complex tags like "go/v0.2.0")
     /// Returns version in format "0.1.2" (without 'v' prefix)
