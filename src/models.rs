@@ -61,6 +61,9 @@ pub struct SymbolRecord {
     pub library_name: String,
     pub symbol: String,
     pub symbol_index: i64,
+    pub is_stub: bool,
+    pub constant_return: Option<i32>,
+    pub return_status: Option<String>,
 }
 
 impl ReleaseRecord {

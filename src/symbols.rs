@@ -8,6 +8,7 @@ use goblin::pe::PE;
 use goblin::Object;
 
 use crate::error::Result;
+use crate::stub_detector::StubAnalysis;
 
 /// Configuration for symbol filtering
 #[derive(Debug, Clone)]
@@ -136,4 +137,43 @@ fn extract_mach_symbols(mach: &Mach, filter: &SymbolFilter) -> Vec<String> {
     symbols.sort();
     symbols.dedup();
     symbols
+}
+
+/// Combined extraction: get symbols and stub analyses in a single pass
+/// This is more efficient than calling extract_symbols and analyze_stubs separately
+pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
+    path: P,
+    filter: &SymbolFilter,
+) -> Result<(Vec<String>, Vec<StubAnalysis>)> {
+    let path = path.as_ref();
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+
+    let object = Object::parse(&buffer)?;
+
+    let (symbols, stubs) = match object {
+        Object::Elf(elf) => {
+            let symbols = extract_elf_symbols(&elf, filter);
+            let stubs = crate::stub_detector::analyze_elf_stubs_with_buffer(&elf, &buffer)?;
+            (symbols, stubs)
+        }
+        Object::PE(pe) => {
+            let symbols = extract_pe_symbols(&pe, filter);
+            let stubs = crate::stub_detector::analyze_pe_stubs_with_buffer(&pe, &buffer)?;
+            (symbols, stubs)
+        }
+        Object::Mach(mach) => {
+            let symbols = extract_mach_symbols(&mach, filter);
+            let stubs = crate::stub_detector::analyze_mach_stubs_with_buffer(&mach, &buffer)?;
+            (symbols, stubs)
+        }
+        _ => {
+            return Err(crate::error::AdbcIndexError::Config(
+                format!("Unsupported binary format: {}", path.display())
+            ));
+        }
+    };
+
+    Ok((symbols, stubs))
 }

@@ -54,6 +54,9 @@ impl SymbolsWriter {
         let mut library_names = Vec::new();
         let mut symbols = Vec::new();
         let mut symbol_indices = Vec::new();
+        let mut is_stubs = Vec::new();
+        let mut constant_returns = Vec::new();
+        let mut return_statuses = Vec::new();
 
         for record in &self.batch {
             names.push(record.name.clone());
@@ -64,6 +67,9 @@ impl SymbolsWriter {
             library_names.push(record.library_name.clone());
             symbols.push(record.symbol.clone());
             symbol_indices.push(record.symbol_index);
+            is_stubs.push(record.is_stub);
+            constant_returns.push(record.constant_return.map(|v| v as i64));
+            return_statuses.push(record.return_status.clone());
         }
 
         let arrays = build_symbols_batch(
@@ -75,6 +81,9 @@ impl SymbolsWriter {
             library_names,
             symbols,
             symbol_indices,
+            is_stubs,
+            constant_returns,
+            return_statuses,
         );
 
         let batch = RecordBatch::try_new(Arc::new(symbols_schema()), arrays)?;

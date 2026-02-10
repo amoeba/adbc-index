@@ -5,6 +5,7 @@ mod error;
 mod github;
 mod models;
 mod parquet;
+mod stub_detector;
 mod symbols;
 
 use clap::{Parser, Subcommand};
@@ -249,6 +250,149 @@ fn load_cached_releases(cache_dir: &PathBuf, driver_name: &str) -> Result<Vec<gi
     Ok(releases)
 }
 
+/// Result of processing a single driver
+struct DriverProcessResult {
+    library_records: Vec<models::LibraryRecord>,
+    symbol_records: Vec<models::SymbolRecord>,
+    release_data: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, std::collections::HashSet<String>, std::collections::HashSet<String>))>,
+    driver_name: String,
+    driver_owner: String,
+    driver_repo: String,
+    library_count: usize,
+}
+
+/// Process a single driver and return its results
+async fn process_driver(
+    driver: models::DriverConfig,
+    cache_dir: PathBuf,
+    symbol_filter: symbols::SymbolFilter,
+) -> Result<DriverProcessResult> {
+    use std::collections::HashSet;
+    use models::{LibraryRecord, SymbolRecord};
+
+    let mut library_records = Vec::new();
+    let mut symbol_records = Vec::new();
+    let mut release_data_vec: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>))> = Vec::new();
+    let mut library_count = 0;
+
+    println!("📦 Loading cached releases for {}", driver.name);
+
+    let releases = load_cached_releases(&cache_dir, &driver.name)?;
+    println!("   Found {} releases in cache", releases.len());
+
+    for release in &releases {
+        let release_url = release.html_url.clone();
+        let tag = release.tag_name.clone();
+        let version = models::ReleaseRecord::parse_version(&tag);
+        let published_date = release
+            .published_at
+            .unwrap_or_else(|| chrono::Utc::now());
+
+        for asset in &release.assets {
+            // Parse artifact metadata
+            let artifact_meta = artifact_parser::parse_artifact(&asset.name);
+
+            // Skip non-driver artifacts (docs, configs, etc.)
+            if !is_driver_artifact(&artifact_meta.file_format) {
+                continue;
+            }
+
+            // Extract archive and find shared library
+            let library_info = extract_and_find_library(
+                &cache_dir,
+                &driver.name,
+                &tag,
+                &asset.name,
+            );
+
+            // Only process if we found a library
+            if let Some(lib_info) = library_info {
+                if let (Some(os), Some(arch)) = (&artifact_meta.os, &artifact_meta.arch) {
+                    // Add to library records
+                    library_records.push(LibraryRecord {
+                        name: driver.name.clone(),
+                        release_tag: tag.clone(),
+                        version: version.clone(),
+                        published_date,
+                        os: os.clone(),
+                        arch: arch.clone(),
+                        library_name: lib_info.name.clone(),
+                        library_size_bytes: lib_info.size,
+                        library_sha256: lib_info.sha256.clone().unwrap_or_default(),
+                        artifact_name: asset.name.clone(),
+                        artifact_url: asset.browser_download_url.clone(),
+                    });
+
+                    // Extract symbols and analyze stubs in a single pass
+                    if let Some(ref lib_path) = lib_info.path {
+                        match symbols::extract_symbols_and_stubs(lib_path, &symbol_filter) {
+                            Ok((syms, stub_analyses)) => {
+                                // Build map of symbol -> stub analysis
+                                let stub_map: std::collections::HashMap<String, stub_detector::StubAnalysis> =
+                                    stub_analyses.into_iter()
+                                        .map(|a| (a.symbol_name.clone(), a))
+                                        .collect();
+
+                                for (idx, symbol) in syms.into_iter().enumerate() {
+                                    let stub_info = stub_map.get(&symbol);
+
+                                    symbol_records.push(SymbolRecord {
+                                        name: driver.name.clone(),
+                                        release_tag: tag.clone(),
+                                        version: version.clone(),
+                                        os: os.clone(),
+                                        arch: arch.clone(),
+                                        library_name: lib_info.name.clone(),
+                                        symbol: symbol.clone(),
+                                        symbol_index: idx as i64,
+                                        is_stub: stub_info.map(|s| s.is_stub).unwrap_or(false),
+                                        constant_return: stub_info.and_then(|s| s.constant_return),
+                                        return_status: stub_info.and_then(|s| s.status_code.map(|c| c.name().to_string())),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("   ⚠️  Failed to extract symbols and stubs from {}: {}", lib_info.name, e);
+                            }
+                        }
+                    }
+
+                    // Track library count
+                    library_count += 1;
+
+                    // Aggregate release data
+                    let key = (driver.name.clone(), tag.clone());
+
+                    // Find existing entry or create new one
+                    if let Some(entry) = release_data_vec.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1.3.insert(os.clone());
+                        entry.1.4.insert(arch.clone());
+                    } else {
+                        let mut os_set = HashSet::new();
+                        let mut arch_set = HashSet::new();
+                        os_set.insert(os.clone());
+                        arch_set.insert(arch.clone());
+                        release_data_vec.push((key, (version.clone(), published_date, release_url.clone(), os_set, arch_set)));
+                    }
+                }
+            }
+        }
+    }
+
+    let total_artifacts: usize = releases.iter().map(|r| r.assets.len()).sum();
+    println!("   Total artifacts: {}", total_artifacts);
+
+    Ok(DriverProcessResult {
+        library_records,
+        symbol_records,
+        release_data: release_data_vec,
+        driver_name: driver.name,
+        driver_owner: driver.owner,
+        driver_repo: driver.repo,
+        library_count,
+    })
+}
+
 async fn report() -> Result<()> {
     // Run sync first - if it fails, report fails
     println!("🔄 Running sync before generating report...");
@@ -269,122 +413,61 @@ async fn report() -> Result<()> {
     println!();
 
     use std::collections::{HashMap, HashSet};
-    use models::{LibraryRecord, DriverRecord, SymbolRecord};
+    use models::DriverRecord;
 
-    // Track releases, libraries, drivers, and symbols separately
+    // Configure symbol filter - only extract symbols starting with "Adbc"
+    let symbol_filter = symbols::SymbolFilter::default();
+
+    // Process all drivers in parallel
+    let mut tasks = Vec::new();
+    for driver in drivers {
+        let cache_dir_clone = cache_dir.clone();
+        let symbol_filter_clone = symbol_filter.clone();
+
+        let task = tokio::task::spawn_blocking(move || {
+            // Use tokio::runtime::Handle to run async code from blocking context
+            tokio::runtime::Handle::current().block_on(
+                process_driver(driver, cache_dir_clone, symbol_filter_clone)
+            )
+        });
+
+        tasks.push(task);
+    }
+
+    // Collect results from all tasks
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
     let mut release_data: HashMap<(String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>)> = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
-    // Configure symbol filter - only extract symbols starting with "Adbc"
-    let symbol_filter = symbols::SymbolFilter::default();
+    for task in tasks {
+        match task.await {
+            Ok(Ok(result)) => {
+                // Merge results
+                library_records.extend(result.library_records);
+                symbol_records.extend(result.symbol_records);
 
-    for driver in &drivers {
-        driver_stats.insert(
-            driver.name.clone(),
-            (driver.owner.clone(), driver.repo.clone(), 0)
-        );
-        println!("📦 Loading cached releases for {}", driver.name);
-
-        match load_cached_releases(&cache_dir, &driver.name) {
-            Ok(releases) => {
-                println!("   Found {} releases in cache", releases.len());
-
-                for release in &releases {
-                    let release_url = release.html_url.clone();
-                    let tag = release.tag_name.clone();
-                    let version = models::ReleaseRecord::parse_version(&tag);
-                    let published_date = release
-                        .published_at
-                        .unwrap_or_else(|| chrono::Utc::now());
-
-                    for asset in &release.assets {
-                        // Parse artifact metadata
-                        let artifact_meta = artifact_parser::parse_artifact(&asset.name);
-
-                        // Skip non-driver artifacts (docs, configs, etc.)
-                        if !is_driver_artifact(&artifact_meta.file_format) {
-                            continue;
-                        }
-
-                        // Extract archive and find shared library
-                        let library_info = extract_and_find_library(
-                            &cache_dir,
-                            &driver.name,
-                            &tag,
-                            &asset.name,
-                        );
-
-                        // Only process if we found a library
-                        if let Some(lib_info) = library_info {
-                            if let (Some(os), Some(arch)) = (&artifact_meta.os, &artifact_meta.arch) {
-                                // Add to library records
-                                library_records.push(LibraryRecord {
-                                    name: driver.name.clone(),
-                                    release_tag: tag.clone(),
-                                    version: version.clone(),
-                                    published_date,
-                                    os: os.clone(),
-                                    arch: arch.clone(),
-                                    library_name: lib_info.name.clone(),
-                                    library_size_bytes: lib_info.size,
-                                    library_sha256: lib_info.sha256.clone().unwrap_or_default(),
-                                    artifact_name: asset.name.clone(),
-                                    artifact_url: asset.browser_download_url.clone(),
-                                });
-
-                                // Extract symbols from the library if we have a path
-                                if let Some(ref lib_path) = lib_info.path {
-                                    match symbols::extract_symbols(lib_path, &symbol_filter) {
-                                        Ok(syms) => {
-                                            for (idx, symbol) in syms.into_iter().enumerate() {
-                                                symbol_records.push(SymbolRecord {
-                                                    name: driver.name.clone(),
-                                                    release_tag: tag.clone(),
-                                                    version: version.clone(),
-                                                    os: os.clone(),
-                                                    arch: arch.clone(),
-                                                    library_name: lib_info.name.clone(),
-                                                    symbol,
-                                                    symbol_index: idx as i64,
-                                                });
-                                            }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("   ⚠️  Failed to extract symbols from {}: {}", lib_info.name, e);
-                                        }
-                                    }
-                                }
-
-                                // Track library count for driver
-                                if let Some(stats) = driver_stats.get_mut(&driver.name) {
-                                    stats.2 += 1;
-                                }
-
-                                // Aggregate release data
-                                let key = (driver.name.clone(), tag.clone());
-                                release_data.entry(key)
-                                    .or_insert_with(|| (version.clone(), published_date, release_url.clone(), HashSet::new(), HashSet::new()))
-                                    .3.insert(os.clone());
-                                release_data.get_mut(&(driver.name.clone(), tag.clone())).unwrap()
-                                    .4.insert(arch.clone());
-                            }
-                        }
-                    }
+                // Merge release data
+                for (key, value) in result.release_data {
+                    release_data.insert(key, value);
                 }
 
-                let total_artifacts: usize = releases.iter().map(|r| r.assets.len()).sum();
-                println!("   Total artifacts: {}", total_artifacts);
+                // Store driver stats
+                driver_stats.insert(
+                    result.driver_name,
+                    (result.driver_owner, result.driver_repo, result.library_count)
+                );
+            }
+            Ok(Err(e)) => {
+                eprintln!("   ⚠️  Error processing driver: {}", e);
             }
             Err(e) => {
-                eprintln!("   ⚠️  Error loading cached releases: {}", e);
-                eprintln!("   Continuing with other drivers...");
+                eprintln!("   ⚠️  Task join error: {}", e);
             }
         }
-
-        println!();
     }
+
+    println!();
 
     println!("📊 Total library records: {}", library_records.len());
     println!("📊 Total symbol records: {}", symbol_records.len());
@@ -674,6 +757,208 @@ fn is_driver_artifact(file_format: &Option<String>) -> bool {
     }
 }
 
+/// Generate an SVG plot showing cumulative driver releases over time
+fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
+    use chrono::NaiveDateTime;
+
+    // Parse CSV to extract dates and driver names
+    let mut data_points: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
+
+    for (idx, line) in timeline_csv.lines().enumerate() {
+        if idx == 0 {
+            continue; // Skip header
+        }
+
+        let cells = parse_csv_line(line);
+        if cells.len() >= 2 {
+            let _name = &cells[0];
+            let date_str = &cells[1];
+
+            // Parse the timestamp (format: "2024-01-15 12:34:56.123" or "2024-01-15 12:34:56")
+            // Try with microseconds first, then without
+            let dt_result = NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S%.f")
+                .or_else(|_| NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S"));
+
+            if let Ok(naive_dt) = dt_result {
+                let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc);
+                data_points.push((dt, _name.clone()));
+            }
+        }
+    }
+
+    if data_points.is_empty() {
+        return String::from("<p>No driver release data available</p>");
+    }
+
+    // Already sorted by date from SQL query
+    // Calculate cumulative counts, grouping by date
+    let mut plot_points: Vec<(chrono::DateTime<chrono::Utc>, i32)> = Vec::new();
+    let mut current_date: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut count = 0;
+
+    for (date, _) in data_points {
+        let date_only = date.date_naive();
+
+        match current_date {
+            None => {
+                // First point
+                count = 1;
+                current_date = Some(date);
+                plot_points.push((date, count));
+            }
+            Some(prev_date) => {
+                let prev_date_only = prev_date.date_naive();
+                if date_only == prev_date_only {
+                    // Same day - increment and update the last point
+                    count += 1;
+                    if let Some(last) = plot_points.last_mut() {
+                        last.1 = count;
+                    }
+                } else {
+                    // New day
+                    count += 1;
+                    plot_points.push((date, count));
+                    current_date = Some(date);
+                }
+            }
+        }
+    }
+
+    if plot_points.is_empty() {
+        return String::from("<p>No driver release data available</p>");
+    }
+
+    // SVG dimensions
+    let width = 900.0;
+    let height = 500.0;
+    let margin_left = 60.0;
+    let margin_right = 40.0;
+    let margin_top = 60.0;
+    let margin_bottom = 80.0;
+    let plot_width = width - margin_left - margin_right;
+    let plot_height = height - margin_top - margin_bottom;
+
+    // Calculate scales
+    let min_date = plot_points.first().unwrap().0;
+    let max_date = plot_points.last().unwrap().0;
+    let date_range = (max_date - min_date).num_seconds() as f64;
+    let max_count = plot_points.last().unwrap().1;
+
+    // Generate SVG
+    let mut svg = String::new();
+    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">", width, height));
+    svg.push_str("\n");
+
+    // Background
+    svg.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#f9f9f9\"/>");
+    svg.push_str("\n");
+
+    // Title
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"30\" font-size=\"20\" font-weight=\"bold\" text-anchor=\"middle\">ADBC Drivers Released Over Time</text>",
+        width / 2.0
+    ));
+    svg.push_str("\n");
+
+    // Axes
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"black\" stroke-width=\"2\"/>",
+        margin_left, margin_top + plot_height, margin_left + plot_width, margin_top + plot_height
+    ));
+    svg.push_str("\n");
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"black\" stroke-width=\"2\"/>",
+        margin_left, margin_top, margin_left, margin_top + plot_height
+    ));
+    svg.push_str("\n");
+
+    // Y-axis label
+    svg.push_str(&format!(
+        "<text x=\"20\" y=\"{}\" font-size=\"14\" text-anchor=\"middle\" transform=\"rotate(-90, 20, {})\">Number of Drivers</text>",
+        margin_top + plot_height / 2.0, margin_top + plot_height / 2.0
+    ));
+    svg.push_str("\n");
+
+    // X-axis label
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" font-size=\"14\" text-anchor=\"middle\">Date</text>",
+        margin_left + plot_width / 2.0, height - 20.0
+    ));
+    svg.push_str("\n");
+
+    // Y-axis ticks and grid
+    let y_tick_count = 5;
+    for i in 0..=y_tick_count {
+        let tick_value = (max_count as f64 / y_tick_count as f64 * i as f64).round() as i32;
+        let y = margin_top + plot_height - (tick_value as f64 / max_count as f64 * plot_height);
+
+        // Grid line
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ddd\" stroke-width=\"1\"/>",
+            margin_left, y, margin_left + plot_width, y
+        ));
+        svg.push_str("\n");
+
+        // Tick label
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"12\" text-anchor=\"end\" alignment-baseline=\"middle\">{}</text>",
+            margin_left - 10.0, y, tick_value
+        ));
+        svg.push_str("\n");
+    }
+
+    // X-axis ticks
+    let x_tick_count = 6;
+    for i in 0..=x_tick_count {
+        let date_offset = date_range * i as f64 / x_tick_count as f64;
+        let tick_date = min_date + chrono::Duration::seconds(date_offset as i64);
+        let x = margin_left + (plot_width * i as f64 / x_tick_count as f64);
+
+        // Tick mark
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"black\" stroke-width=\"1\"/>",
+            x, margin_top + plot_height, x, margin_top + plot_height + 5.0
+        ));
+        svg.push_str("\n");
+
+        // Tick label
+        let date_label = tick_date.format("%Y-%m-%d").to_string();
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"11\" text-anchor=\"end\" transform=\"rotate(-45, {}, {})\">{}</text>",
+            x, margin_top + plot_height + 15.0, x, margin_top + plot_height + 15.0, date_label
+        ));
+        svg.push_str("\n");
+    }
+
+    // Plot line
+    let mut polyline_points = String::new();
+    for (date, count) in &plot_points {
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
+        polyline_points.push_str(&format!("{},{} ", x, y));
+    }
+
+    svg.push_str(&format!(
+        "<polyline points=\"{}\" fill=\"none\" stroke=\"#2563eb\" stroke-width=\"3\"/>",
+        polyline_points.trim()
+    ));
+    svg.push_str("\n");
+
+    // Plot points
+    for (date, count) in &plot_points {
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
+        svg.push_str(&format!(
+            "<circle cx=\"{}\" cy=\"{}\" r=\"4\" fill=\"#2563eb\"/>",
+            x, y
+        ));
+        svg.push_str("\n");
+    }
+
+    svg.push_str("</svg>\n");
+    svg
+}
+
 async fn html() -> Result<()> {
     use std::process::Command;
 
@@ -713,6 +998,21 @@ async fn html() -> Result<()> {
     std::fs::create_dir_all(&output_dir)?;
 
     println!("📖 Reading parquet files with DuckDB...");
+
+    // Query driver timeline data (name and first release date)
+    let timeline_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT name, timezone('UTC', first_release_date) as first_release_date FROM read_parquet('drivers.parquet') ORDER BY first_release_date")
+        .output()?;
+
+    if !timeline_output.status.success() {
+        return Err(error::AdbcIndexError::Config(
+            format!("DuckDB error reading timeline: {}", String::from_utf8_lossy(&timeline_output.stderr))
+        ));
+    }
+
+    let timeline_csv = String::from_utf8_lossy(&timeline_output.stdout);
 
     // Use DuckDB to convert parquet to CSV
     let drivers_csv_output = Command::new("duckdb")
@@ -770,15 +1070,23 @@ async fn html() -> Result<()> {
 
     println!("🔨 Generating HTML...");
 
+    // Generate driver timeline SVG
+    let timeline_svg = generate_driver_timeline_svg(&timeline_csv);
+
     // Generate HTML
     let mut html = String::new();
     html.push_str("<!DOCTYPE html>\n");
     html.push_str("<html>\n");
     html.push_str("<head>\n");
+    html.push_str("<meta charset=\"UTF-8\">\n");
     html.push_str("<title>ADBC Driver Dashboard</title>\n");
     html.push_str("</head>\n");
     html.push_str("<body>\n");
     html.push_str("<h1>ADBC Driver Dashboard</h1>\n\n");
+
+    // Add timeline chart
+    html.push_str(&timeline_svg);
+    html.push_str("\n");
 
     // Drivers table
     html.push_str("<h2>Drivers</h2>\n");
