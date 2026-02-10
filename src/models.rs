@@ -12,6 +12,7 @@ pub enum DriverSource {
 pub struct DriverConfig {
     pub name: String,
     pub source: DriverSource,
+    pub version_req: Option<semver::VersionReq>,
 }
 
 /// A release record - one row per driver release

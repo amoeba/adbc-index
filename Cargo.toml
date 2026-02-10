@@ -24,3 +24,7 @@ zip = "2.2"
 goblin = "0.8"
 iced-x86 = "1.21"
 capstone = "0.12"
+semver = "1.0"
+
+[dev-dependencies]
+tempfile = "3.0"

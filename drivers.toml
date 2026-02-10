@@ -1,7 +1,6 @@
 [drivers]
 bigquery = "https://pypi.org/project/adbc-driver-bigquery/"
 databricks = "https://github.com/adbc-drivers/databricks"
-duckdb = "https://github.com/adbc-drivers/duckdb"
 flightsql = "https://pypi.org/project/adbc-driver-flightsql/"
 mssql = "https://github.com/adbc-drivers/mssql"
 mysql = "https://github.com/adbc-drivers/mysql"
@@ -9,3 +8,8 @@ postgresql = "https://pypi.org/project/adbc-driver-postgresql/"
 snowflake = "https://pypi.org/project/adbc-driver-snowflake/"
 sqlite = "https://pypi.org/project/adbc-driver-sqlite/"
 trino = "https://github.com/adbc-drivers/trino"
+
+# DuckDB - Main DuckDB library exports ADBC symbols starting from v0.8.0
+[drivers.duckdb]
+url = "https://github.com/duckdb/duckdb"
+version = ">=0.8.0"

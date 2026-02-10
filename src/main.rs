@@ -25,7 +25,10 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Sync cache directory with remote GitHub releases
-    Sync,
+    Sync {
+        /// Optional driver name to sync (syncs all drivers if not specified)
+        driver: Option<String>,
+    },
     /// Analyze cache directory and create parquet reports
     Report,
     /// Generate HTML dashboard from parquet files
@@ -37,13 +40,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync => sync().await,
+        Commands::Sync { driver } => sync(driver).await,
         Commands::Report => report().await,
         Commands::Html => html().await,
     }
 }
 
-async fn sync() -> Result<()> {
+async fn sync(driver_filter: Option<String>) -> Result<()> {
     // Hardcoded configuration
     let config = PathBuf::from("drivers.toml");
     let cache_dir = PathBuf::from("cache");
@@ -61,8 +64,20 @@ async fn sync() -> Result<()> {
 
     // Load configuration
     println!("📋 Loading configuration from {:?}", config);
-    let drivers = config::load_config(&config)?;
-    println!("   Found {} drivers", drivers.len());
+    let mut drivers = config::load_config(&config)?;
+
+    // Filter to specific driver if requested
+    if let Some(ref driver_name) = driver_filter {
+        drivers.retain(|d| d.name == *driver_name);
+        if drivers.is_empty() {
+            return Err(error::AdbcIndexError::Config(
+                format!("Driver '{}' not found in configuration", driver_name)
+            ));
+        }
+        println!("   Syncing only driver: {}", driver_name);
+    } else {
+        println!("   Found {} drivers", drivers.len());
+    }
     println!();
 
     // Create GitHub client
@@ -103,8 +118,27 @@ async fn sync() -> Result<()> {
         };
 
         match releases_result {
-            Ok(releases) => {
+            Ok(mut releases) => {
                 println!("   Found {} releases", releases.len());
+
+                // Filter releases by version requirement if specified
+                if let Some(ref version_req) = driver.version_req {
+                    let original_count = releases.len();
+                    releases.retain(|release| {
+                        if let Some(version_str) = ReleaseRecord::parse_version(&release.tag_name) {
+                            // Try to parse as semver
+                            if let Ok(version) = semver::Version::parse(&version_str) {
+                                return version_req.matches(&version);
+                            }
+                        }
+                        // If we can't parse the version, include it (to be safe)
+                        true
+                    });
+                    let filtered_count = original_count - releases.len();
+                    if filtered_count > 0 {
+                        println!("   Filtered out {} releases not matching version requirement", filtered_count);
+                    }
+                }
 
                 let mut driver_new = 0;
                 let mut driver_cached = 0;
@@ -291,8 +325,27 @@ async fn process_driver(
 
     println!("📦 Loading cached releases for {}", driver.name);
 
-    let releases = load_cached_releases(&cache_dir, &driver.name)?;
+    let mut releases = load_cached_releases(&cache_dir, &driver.name)?;
     println!("   Found {} releases in cache", releases.len());
+
+    // Filter releases by version requirement if specified
+    if let Some(ref version_req) = driver.version_req {
+        let original_count = releases.len();
+        releases.retain(|release| {
+            if let Some(version_str) = models::ReleaseRecord::parse_version(&release.tag_name) {
+                // Try to parse as semver
+                if let Ok(version) = semver::Version::parse(&version_str) {
+                    return version_req.matches(&version);
+                }
+            }
+            // If we can't parse the version, include it (to be safe)
+            true
+        });
+        let filtered_count = original_count - releases.len();
+        if filtered_count > 0 {
+            println!("   Filtered out {} releases not matching version requirement", filtered_count);
+        }
+    }
 
     for release in &releases {
         let release_url = release.html_url.clone();
@@ -417,7 +470,7 @@ async fn report() -> Result<()> {
     // Run sync first - if it fails, report fails
     println!("🔄 Running sync before generating report...");
     println!();
-    sync().await?;
+    sync(None).await?;
     println!();
 
     let config = PathBuf::from("drivers.toml");
