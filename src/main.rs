@@ -24,15 +24,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Sync cache directory with remote GitHub releases
-    Sync {
-        /// Optional driver name to sync (syncs all drivers if not specified)
+    /// Download cache directory with remote GitHub releases
+    Download {
+        /// Optional driver name to download (downloads all drivers if not specified)
         driver: Option<String>,
     },
-    /// Analyze cache directory and create parquet reports
-    Report,
-    /// Generate HTML dashboard from parquet files
-    Html,
+    /// Download releases, analyze cache, and generate HTML dashboard
+    Build,
 }
 
 #[tokio::main]
@@ -40,13 +38,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync { driver } => sync(driver).await,
-        Commands::Report => report().await,
-        Commands::Html => html().await,
+        Commands::Download { driver } => download(driver).await,
+        Commands::Build => build().await,
     }
 }
 
-async fn sync(driver_filter: Option<String>) -> Result<()> {
+async fn download(driver_filter: Option<String>) -> Result<()> {
     // Hardcoded configuration
     let config = PathBuf::from("drivers.toml");
     let cache_dir = PathBuf::from("cache");
@@ -59,7 +56,7 @@ async fn sync(driver_filter: Option<String>) -> Result<()> {
         )
     })?;
 
-    println!("🚀 adbc-index sync - Syncing with GitHub and PyPI releases");
+    println!("🚀 adbc-index download - Downloading from GitHub and PyPI releases");
     println!();
 
     // Load configuration
@@ -142,6 +139,7 @@ async fn sync(driver_filter: Option<String>) -> Result<()> {
 
                 let mut driver_new = 0;
                 let mut driver_cached = 0;
+                let mut driver_filtered = 0;
 
                 for release in &releases {
                     let tag = release.tag_name.clone();
@@ -166,6 +164,12 @@ async fn sync(driver_filter: Option<String>) -> Result<()> {
                     }
 
                     for asset in &release.assets {
+                        // Skip artifacts that don't match the filter pattern
+                        if !driver.matches_artifact(&asset.name) {
+                            driver_filtered += 1;
+                            continue;
+                        }
+
                         // Check if artifact already exists in cache with valid SHA256
                         let cache_path = cache_dir
                             .join(&driver.name)
@@ -195,7 +199,11 @@ async fn sync(driver_filter: Option<String>) -> Result<()> {
                     }
                 }
 
-                println!("   Artifacts: {} new, {} cached", driver_new, driver_cached);
+                if driver_filtered > 0 {
+                    println!("   Artifacts: {} new, {} cached, {} filtered", driver_new, driver_cached, driver_filtered);
+                } else {
+                    println!("   Artifacts: {} new, {} cached", driver_new, driver_cached);
+                }
             }
             Err(e) => {
                 eprintln!("   ⚠️  Error fetching releases: {}", e);
@@ -246,7 +254,7 @@ async fn sync(driver_filter: Option<String>) -> Result<()> {
 
         println!();
         println!(
-            "✅ Sync complete: {} artifacts downloaded ({} errors)",
+            "✅ Download complete: {} artifacts downloaded ({} errors)",
             success_count, error_count
         );
         println!("Cache directory: {:?}", cache_dir);
@@ -260,6 +268,30 @@ async fn sync(driver_filter: Option<String>) -> Result<()> {
     } else {
         println!("✅ No new artifacts to download");
     }
+
+    Ok(())
+}
+
+async fn build() -> Result<()> {
+    println!("🔨 adbc-index build - Download, analyze, and generate HTML");
+    println!();
+
+    // Step 1: Download releases
+    println!("📥 Step 1/3: Downloading releases...");
+    download(None).await?;
+    println!();
+
+    // Step 2: Generate parquet reports
+    println!("📊 Step 2/3: Generating parquet reports...");
+    report().await?;
+    println!();
+
+    // Step 3: Generate HTML dashboard
+    println!("🌐 Step 3/3: Generating HTML dashboard...");
+    html().await?;
+
+    println!();
+    println!("✨ Build complete!");
 
     Ok(())
 }
@@ -467,12 +499,6 @@ async fn process_driver(
 }
 
 async fn report() -> Result<()> {
-    // Run sync first - if it fails, report fails
-    println!("🔄 Running sync before generating report...");
-    println!();
-    sync(None).await?;
-    println!();
-
     let config = PathBuf::from("drivers.toml");
     let cache_dir = PathBuf::from("cache");
 
@@ -627,8 +653,12 @@ async fn report() -> Result<()> {
         a.name.cmp(&b.name).then_with(|| a.release_tag.cmp(&b.release_tag))
     });
 
+    // Create dist directory for output
+    let dist_dir = PathBuf::from("dist");
+    std::fs::create_dir_all(&dist_dir)?;
+
     // Write drivers.parquet
-    let drivers_output = PathBuf::from("drivers.parquet");
+    let drivers_output = dist_dir.join("drivers.parquet");
     println!("💾 Writing to {:?}", drivers_output);
     let mut drivers_writer = parquet::DriversWriter::new(&drivers_output)?;
     for record in driver_records {
@@ -638,7 +668,7 @@ async fn report() -> Result<()> {
     println!("   ✓ Written {} drivers", driver_stats.len());
 
     // Write releases.parquet
-    let releases_output = PathBuf::from("releases.parquet");
+    let releases_output = dist_dir.join("releases.parquet");
     println!("💾 Writing to {:?}", releases_output);
     let mut releases_writer = parquet::ReleasesWriter::new(&releases_output)?;
     for record in release_records {
@@ -648,7 +678,7 @@ async fn report() -> Result<()> {
     println!("   ✓ Written {} releases", library_records.len());
 
     // Write libraries.parquet
-    let libraries_output = PathBuf::from("libraries.parquet");
+    let libraries_output = dist_dir.join("libraries.parquet");
     println!("💾 Writing to {:?}", libraries_output);
     let mut libraries_writer = parquet::LibrariesWriter::new(&libraries_output)?;
     for record in library_records {
@@ -657,7 +687,7 @@ async fn report() -> Result<()> {
     libraries_writer.close()?;
 
     // Write symbols.parquet
-    let symbols_output = PathBuf::from("symbols.parquet");
+    let symbols_output = dist_dir.join("symbols.parquet");
     println!("💾 Writing to {:?}", symbols_output);
     let mut symbols_writer = parquet::SymbolsWriter::new(&symbols_output)?;
     for record in symbol_records {
@@ -1091,32 +1121,32 @@ async fn html() -> Result<()> {
     println!("🌐 adbc-index html - Generating HTML dashboard");
     println!();
 
-    let drivers_path = PathBuf::from("drivers.parquet");
-    let releases_path = PathBuf::from("releases.parquet");
-    let libraries_path = PathBuf::from("libraries.parquet");
-    let symbols_path = PathBuf::from("symbols.parquet");
     let output_dir = PathBuf::from("dist");
+    let drivers_path = output_dir.join("drivers.parquet");
+    let releases_path = output_dir.join("releases.parquet");
+    let libraries_path = output_dir.join("libraries.parquet");
+    let symbols_path = output_dir.join("symbols.parquet");
     let output_file = output_dir.join("index.html");
 
     // Check if parquet files exist
     if !drivers_path.exists() {
         return Err(error::AdbcIndexError::Config(
-            "drivers.parquet not found. Run 'adbc-index report' first.".to_string(),
+            "dist/drivers.parquet not found. Run 'adbc-index build' first.".to_string(),
         ));
     }
     if !releases_path.exists() {
         return Err(error::AdbcIndexError::Config(
-            "releases.parquet not found. Run 'adbc-index report' first.".to_string(),
+            "dist/releases.parquet not found. Run 'adbc-index build' first.".to_string(),
         ));
     }
     if !libraries_path.exists() {
         return Err(error::AdbcIndexError::Config(
-            "libraries.parquet not found. Run 'adbc-index report' first.".to_string(),
+            "dist/libraries.parquet not found. Run 'adbc-index build' first.".to_string(),
         ));
     }
     if !symbols_path.exists() {
         return Err(error::AdbcIndexError::Config(
-            "symbols.parquet not found. Run 'adbc-index report' first.".to_string(),
+            "dist/symbols.parquet not found. Run 'adbc-index build' first.".to_string(),
         ));
     }
 
@@ -1129,7 +1159,7 @@ async fn html() -> Result<()> {
     let timeline_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, timezone('UTC', first_release_date) as first_release_date FROM read_parquet('drivers.parquet') ORDER BY first_release_date")
+        .arg("SELECT name, timezone('UTC', first_release_date) as first_release_date FROM read_parquet('dist/drivers.parquet') ORDER BY first_release_date")
         .output()?;
 
     if !timeline_output.status.success() {
@@ -1144,7 +1174,7 @@ async fn html() -> Result<()> {
     let releases_chart_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, COUNT(*) as count FROM read_parquet('releases.parquet') GROUP BY name ORDER BY count DESC")
+        .arg("SELECT name, COUNT(*) as count FROM read_parquet('dist/releases.parquet') GROUP BY name ORDER BY count DESC")
         .output()?;
 
     if !releases_chart_output.status.success() {
@@ -1158,7 +1188,7 @@ async fn html() -> Result<()> {
     let libraries_chart_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, AVG(library_size_bytes) as avg_size FROM read_parquet('libraries.parquet') GROUP BY name ORDER BY avg_size DESC")
+        .arg("SELECT name, AVG(library_size_bytes) as avg_size FROM read_parquet('dist/libraries.parquet') GROUP BY name ORDER BY avg_size DESC")
         .output()?;
 
     if !libraries_chart_output.status.success() {
@@ -1172,7 +1202,7 @@ async fn html() -> Result<()> {
     let symbols_chart_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('symbols.parquet') GROUP BY name ORDER BY symbol_count DESC")
+        .arg("SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') GROUP BY name ORDER BY symbol_count DESC")
         .output()?;
 
     if !symbols_chart_output.status.success() {
@@ -1186,25 +1216,25 @@ async fn html() -> Result<()> {
     let drivers_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, repo_name, release_count, library_count, strftime(timezone('UTC', first_release_date), '%Y-%m-%d %H:%M:%S UTC') as first_release_date, first_release_version, strftime(timezone('UTC', latest_release_date), '%Y-%m-%d %H:%M:%S UTC') as latest_release_date, latest_release_version FROM read_parquet('drivers.parquet')")
+        .arg("SELECT name, repo_name, release_count, library_count, strftime(timezone('UTC', first_release_date), '%Y-%m-%d %H:%M:%S UTC') as first_release_date, first_release_version, strftime(timezone('UTC', latest_release_date), '%Y-%m-%d %H:%M:%S UTC') as latest_release_date, latest_release_version FROM read_parquet('dist/drivers.parquet')")
         .output()?;
 
     let releases_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, release_url, os, arch FROM read_parquet('releases.parquet')")
+        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, release_url, os, arch FROM read_parquet('dist/releases.parquet')")
         .output()?;
 
     let libraries_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, os, arch, library_name, library_size_bytes, library_sha256, artifact_name, artifact_url FROM read_parquet('libraries.parquet')")
+        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, os, arch, library_name, library_size_bytes, library_sha256, artifact_name, artifact_url FROM read_parquet('dist/libraries.parquet')")
         .output()?;
 
     let symbols_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT * FROM read_parquet('symbols.parquet')")
+        .arg("SELECT * FROM read_parquet('dist/symbols.parquet')")
         .output()?;
 
     if !drivers_csv_output.status.success() {
@@ -1254,6 +1284,14 @@ async fn html() -> Result<()> {
     html.push_str("</head>\n");
     html.push_str("<body>\n");
     html.push_str("<h1>ADBC Driver Dashboard</h1>\n\n");
+
+    // Add data download links
+    html.push_str("<p>Download data files: ");
+    html.push_str("<a href=\"drivers.parquet\">drivers.parquet</a> | ");
+    html.push_str("<a href=\"releases.parquet\">releases.parquet</a> | ");
+    html.push_str("<a href=\"libraries.parquet\">libraries.parquet</a> | ");
+    html.push_str("<a href=\"symbols.parquet\">symbols.parquet</a>");
+    html.push_str("</p>\n\n");
 
     // Add timeline chart
     html.push_str(&timeline_svg);
