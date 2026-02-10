@@ -17,6 +17,8 @@ struct DetailedDriverConfig {
     url: String,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    artifact_filter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -32,8 +34,8 @@ pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
     let mut configs = Vec::new();
 
     for (name, driver_value) in config.drivers {
-        let (url, version_req) = match driver_value {
-            DriverValue::Simple(url) => (url, None),
+        let (url, version_req, artifact_filter) = match driver_value {
+            DriverValue::Simple(url) => (url, None, None),
             DriverValue::Detailed(detailed) => {
                 let version_req = if let Some(version_str) = &detailed.version {
                     Some(semver::VersionReq::parse(version_str).map_err(|e| {
@@ -45,7 +47,7 @@ pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
                 } else {
                     None
                 };
-                (detailed.url, version_req)
+                (detailed.url, version_req, detailed.artifact_filter)
             }
         };
 
@@ -54,6 +56,7 @@ pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
             name,
             source,
             version_req,
+            artifact_filter,
         });
     }
 
@@ -191,6 +194,7 @@ sqlite = "https://pypi.org/project/adbc-driver-sqlite/"
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "sqlite");
         assert!(configs[0].version_req.is_none());
+        assert!(configs[0].artifact_filter.is_none());
 
         // Test detailed format with version
         let mut file = NamedTempFile::new().unwrap();
@@ -207,10 +211,34 @@ version = ">=0.8.0"
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "duckdb");
         assert!(configs[0].version_req.is_some());
+        assert!(configs[0].artifact_filter.is_none());
         let version_req = configs[0].version_req.as_ref().unwrap();
         assert!(version_req.matches(&semver::Version::parse("0.8.0").unwrap()));
         assert!(version_req.matches(&semver::Version::parse("1.0.0").unwrap()));
         assert!(!version_req.matches(&semver::Version::parse("0.7.0").unwrap()));
+
+        // Test detailed format with version and artifact filter
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[drivers.duckdb]
+url = "https://github.com/duckdb/duckdb"
+version = ">=0.8.0"
+artifact_filter = "libduckdb-*"
+"#
+        )
+        .unwrap();
+        let configs = load_config(file.path()).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "duckdb");
+        assert!(configs[0].version_req.is_some());
+        assert!(configs[0].artifact_filter.is_some());
+        assert_eq!(configs[0].artifact_filter.as_ref().unwrap(), "libduckdb-*");
+
+        // Test artifact matching
+        assert!(configs[0].matches_artifact("libduckdb-osx-universal.zip"));
+        assert!(!configs[0].matches_artifact("duckdb_cli-linux.zip"));
     }
 
     #[test]

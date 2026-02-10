@@ -13,6 +13,45 @@ pub struct DriverConfig {
     pub name: String,
     pub source: DriverSource,
     pub version_req: Option<semver::VersionReq>,
+    pub artifact_filter: Option<String>,
+}
+
+impl DriverConfig {
+    /// Check if an artifact filename matches the filter pattern
+    /// Returns true if no filter is set, or if the artifact matches the pattern
+    pub fn matches_artifact(&self, filename: &str) -> bool {
+        match &self.artifact_filter {
+            None => true,
+            Some(pattern) => {
+                // Support glob-style patterns
+                if pattern.contains('*') || pattern.contains('?') {
+                    // Use glob matching
+                    if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
+                        return glob_pattern.matches(filename);
+                    }
+                    // If pattern compilation fails, fall through to prefix matching
+                }
+
+                // Simple prefix/suffix/contains matching
+                if pattern.starts_with('*') && pattern.ends_with('*') {
+                    // *text* - contains
+                    let text = &pattern[1..pattern.len()-1];
+                    filename.contains(text)
+                } else if pattern.starts_with('*') {
+                    // *suffix - ends with
+                    let suffix = &pattern[1..];
+                    filename.ends_with(suffix)
+                } else if pattern.ends_with('*') {
+                    // prefix* - starts with
+                    let prefix = &pattern[..pattern.len()-1];
+                    filename.starts_with(prefix)
+                } else {
+                    // Exact match
+                    filename == pattern
+                }
+            }
+        }
+    }
 }
 
 /// A release record - one row per driver release
@@ -202,5 +241,95 @@ mod tests {
         assert_eq!(ReleaseRecord::parse_version("go"), None);
         assert_eq!(ReleaseRecord::parse_version("latest"), None);
         assert_eq!(ReleaseRecord::parse_version("main"), None);
+    }
+
+    #[test]
+    fn test_artifact_filter_prefix() {
+        let config = DriverConfig {
+            name: "test".to_string(),
+            source: DriverSource::GitHub {
+                owner: "test".to_string(),
+                repo: "test".to_string(),
+            },
+            version_req: None,
+            artifact_filter: Some("lib*".to_string()),
+        };
+
+        assert!(config.matches_artifact("libduckdb.so"));
+        assert!(config.matches_artifact("libduckdb-osx-universal.zip"));
+        assert!(!config.matches_artifact("duckdb_cli-osx-universal.zip"));
+        assert!(!config.matches_artifact("duckdb_jdbc.jar"));
+    }
+
+    #[test]
+    fn test_artifact_filter_suffix() {
+        let config = DriverConfig {
+            name: "test".to_string(),
+            source: DriverSource::GitHub {
+                owner: "test".to_string(),
+                repo: "test".to_string(),
+            },
+            version_req: None,
+            artifact_filter: Some("*.zip".to_string()),
+        };
+
+        assert!(config.matches_artifact("libduckdb-osx-universal.zip"));
+        assert!(config.matches_artifact("duckdb_cli.zip"));
+        assert!(!config.matches_artifact("libduckdb.so"));
+        assert!(!config.matches_artifact("duckdb_jdbc.jar"));
+    }
+
+    #[test]
+    fn test_artifact_filter_contains() {
+        let config = DriverConfig {
+            name: "test".to_string(),
+            source: DriverSource::GitHub {
+                owner: "test".to_string(),
+                repo: "test".to_string(),
+            },
+            version_req: None,
+            artifact_filter: Some("*linux*".to_string()),
+        };
+
+        assert!(config.matches_artifact("libduckdb-linux-amd64.zip"));
+        assert!(config.matches_artifact("linux-binary.tar.gz"));
+        assert!(!config.matches_artifact("libduckdb-osx-universal.zip"));
+        assert!(!config.matches_artifact("windows-binary.zip"));
+    }
+
+    #[test]
+    fn test_artifact_filter_glob() {
+        let config = DriverConfig {
+            name: "test".to_string(),
+            source: DriverSource::GitHub {
+                owner: "test".to_string(),
+                repo: "test".to_string(),
+            },
+            version_req: None,
+            artifact_filter: Some("libduckdb-*.zip".to_string()),
+        };
+
+        assert!(config.matches_artifact("libduckdb-osx-universal.zip"));
+        assert!(config.matches_artifact("libduckdb-linux-amd64.zip"));
+        assert!(!config.matches_artifact("libduckdb-osx-universal.tar.gz"));
+        assert!(!config.matches_artifact("duckdb_cli-linux.zip"));
+    }
+
+    #[test]
+    fn test_artifact_filter_none() {
+        let config = DriverConfig {
+            name: "test".to_string(),
+            source: DriverSource::GitHub {
+                owner: "test".to_string(),
+                repo: "test".to_string(),
+            },
+            version_req: None,
+            artifact_filter: None,
+        };
+
+        // No filter means everything matches
+        assert!(config.matches_artifact("anything.zip"));
+        assert!(config.matches_artifact("libduckdb.so"));
+        assert!(config.matches_artifact("random_file.txt"));
     }
 }

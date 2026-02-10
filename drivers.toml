@@ -13,3 +13,4 @@ trino = "https://github.com/adbc-drivers/trino"
 [drivers.duckdb]
 url = "https://github.com/duckdb/duckdb"
 version = ">=0.8.0"
+artifact_filter = "libduckdb-*"
