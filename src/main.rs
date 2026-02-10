@@ -49,8 +49,12 @@ async fn sync() -> Result<()> {
     let cache_dir = PathBuf::from("cache");
     let concurrent_downloads = 5;
 
-    // Get GitHub token (optional)
-    let github_token = std::env::var("GITHUB_TOKEN").ok();
+    // Require GitHub token
+    let github_token = std::env::var("GITHUB_TOKEN").map_err(|_| {
+        error::AdbcIndexError::Config(
+            "GITHUB_TOKEN environment variable is not set. Please set it with: export GITHUB_TOKEN=your_token_here".to_string()
+        )
+    })?;
 
     println!("🚀 adbc-index sync - Syncing with GitHub and PyPI releases");
     println!();
@@ -62,15 +66,9 @@ async fn sync() -> Result<()> {
     println!();
 
     // Create GitHub client
-    let gh_client = if let Some(ref token) = github_token {
-        println!("🔑 Using GitHub token for authentication");
-        println!();
-        github::GitHubClient::new(Some(token.clone()))?
-    } else {
-        println!("⚠️  No GitHub token found - using unauthenticated requests (lower rate limits)");
-        println!();
-        github::GitHubClient::new(None)?
-    };
+    println!("🔑 Using GitHub token for authentication");
+    println!();
+    let gh_client = github::GitHubClient::new(Some(github_token))?;
 
     // Create PyPI client
     let pypi_client = pypi::PyPIClient::new()?;
