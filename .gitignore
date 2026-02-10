@@ -1,16 +1,5 @@
-# Build outputs
 /target/
 Cargo.lock
 
-# Runtime outputs
-*.parquet
-cache/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
+dist
+cache
