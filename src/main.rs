@@ -1018,19 +1018,19 @@ async fn html() -> Result<()> {
     let drivers_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT * FROM read_parquet('drivers.parquet')")
+        .arg("SELECT name, repo_name, release_count, library_count, strftime(timezone('UTC', first_release_date), '%Y-%m-%d %H:%M:%S UTC') as first_release_date, first_release_version, strftime(timezone('UTC', latest_release_date), '%Y-%m-%d %H:%M:%S UTC') as latest_release_date, latest_release_version FROM read_parquet('drivers.parquet')")
         .output()?;
 
     let releases_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT * FROM read_parquet('releases.parquet')")
+        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, release_url, os, arch FROM read_parquet('releases.parquet')")
         .output()?;
 
     let libraries_csv_output = Command::new("duckdb")
         .arg("-csv")
         .arg("-c")
-        .arg("SELECT * FROM read_parquet('libraries.parquet')")
+        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, os, arch, library_name, library_size_bytes, library_sha256, artifact_name, artifact_url FROM read_parquet('libraries.parquet')")
         .output()?;
 
     let symbols_csv_output = Command::new("duckdb")
