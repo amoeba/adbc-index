@@ -177,3 +177,72 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
 
     Ok((symbols, stubs))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_symbol_filter_default() {
+        let filter = SymbolFilter::default();
+
+        assert!(filter.enabled);
+        assert_eq!(filter.prefixes, vec!["Adbc"]);
+
+        // Should match symbols starting with "Adbc"
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("AdbcConnectionNew"));
+
+        // Should not match other symbols
+        assert!(!filter.matches("adbc_driver_init")); // lowercase
+        assert!(!filter.matches("MyAdbcFunction")); // prefix not at start
+        assert!(!filter.matches("sqlite3_open")); // different function
+    }
+
+    #[test]
+    fn test_symbol_filter_custom_prefixes() {
+        let filter = SymbolFilter::new(vec![
+            "Adbc".to_string(),
+            "sqlite3_".to_string(),
+        ]);
+
+        assert!(filter.enabled);
+
+        // Should match both prefixes
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("sqlite3_open"));
+        assert!(filter.matches("sqlite3_close"));
+
+        // Should not match other symbols
+        assert!(!filter.matches("postgres_connect"));
+        assert!(!filter.matches("my_function"));
+    }
+
+    #[test]
+    fn test_symbol_filter_disabled() {
+        let filter = SymbolFilter::new(vec![]);
+
+        assert!(!filter.enabled);
+        assert!(filter.prefixes.is_empty());
+
+        // Should match everything when disabled
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("sqlite3_open"));
+        assert!(filter.matches("anything"));
+        assert!(filter.matches(""));
+    }
+
+    #[test]
+    fn test_symbol_filter_case_sensitive() {
+        let filter = SymbolFilter::new(vec!["Adbc".to_string()]);
+
+        // Case-sensitive matching
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("Adbc"));
+
+        // Should not match different case
+        assert!(!filter.matches("adbc_driver_init"));
+        assert!(!filter.matches("ADBC_DRIVER_INIT"));
+        assert!(!filter.matches("adbcDriverInit"));
+    }
+}

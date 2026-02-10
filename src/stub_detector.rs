@@ -285,7 +285,7 @@ fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
 }
 
 /// Detect simple constant return patterns in x86/x64
-fn detect_x86_constant_return(bytes: &[u8]) -> Option<i32> {
+pub(crate) fn detect_x86_constant_return(bytes: &[u8]) -> Option<i32> {
     if bytes.len() < 2 {
         return None;
     }
@@ -339,7 +339,7 @@ fn detect_x86_constant_return(bytes: &[u8]) -> Option<i32> {
 }
 
 /// Detect simple constant return patterns in ARM64
-fn detect_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
+pub(crate) fn detect_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
     if bytes.len() < 8 {
         return None;
     }
@@ -373,4 +373,118 @@ fn detect_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_code_from_i32_valid() {
+        // Test valid status codes
+        assert_eq!(AdbcStatusCode::from_i32(0), Some(AdbcStatusCode::Ok));
+        assert_eq!(AdbcStatusCode::from_i32(2), Some(AdbcStatusCode::NotImplemented));
+        assert_eq!(AdbcStatusCode::from_i32(13), Some(AdbcStatusCode::Timeout));
+    }
+
+    #[test]
+    fn test_status_code_from_i32_invalid() {
+        // Test invalid status codes
+        assert_eq!(AdbcStatusCode::from_i32(-1), None);
+        assert_eq!(AdbcStatusCode::from_i32(14), None);
+        assert_eq!(AdbcStatusCode::from_i32(999), None);
+    }
+
+    #[test]
+    fn test_status_code_names() {
+        // Test status code name strings
+        assert_eq!(AdbcStatusCode::Ok.name(), "ADBC_STATUS_OK");
+        assert_eq!(AdbcStatusCode::NotImplemented.name(), "ADBC_STATUS_NOT_IMPLEMENTED");
+        assert_eq!(AdbcStatusCode::Unknown.name(), "ADBC_STATUS_UNKNOWN");
+        assert_eq!(AdbcStatusCode::Timeout.name(), "ADBC_STATUS_TIMEOUT");
+    }
+
+    #[test]
+    fn test_detect_x86_return_zero_xor() {
+        // Test x86 pattern: xor eax, eax; ret (returns 0)
+        // 31 C0 C3
+        let bytes = vec![0x31, 0xC0, 0xC3];
+        assert_eq!(detect_x86_constant_return(&bytes), Some(0));
+
+        // Alternative encoding: 33 C0 C3
+        let bytes = vec![0x33, 0xC0, 0xC3];
+        assert_eq!(detect_x86_constant_return(&bytes), Some(0));
+    }
+
+    #[test]
+    fn test_detect_x86_return_constant_mov() {
+        // Test x86 pattern: mov eax, 2; ret
+        // B8 02 00 00 00 C3
+        let bytes = vec![0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3];
+        assert_eq!(detect_x86_constant_return(&bytes), Some(2));
+
+        // Test with different constant
+        let bytes = vec![0xB8, 0x0D, 0x00, 0x00, 0x00, 0xC3];
+        assert_eq!(detect_x86_constant_return(&bytes), Some(13));
+    }
+
+    #[test]
+    fn test_detect_x86_no_constant_return() {
+        // Test complex code that doesn't have a simple constant return
+        // This should return None
+        let bytes = vec![0x48, 0x89, 0x5C, 0x24, 0x08, 0x57];
+        assert_eq!(detect_x86_constant_return(&bytes), None);
+
+        // Empty bytes
+        assert_eq!(detect_x86_constant_return(&[]), None);
+
+        // Just a return without constant setup
+        let bytes = vec![0xC3];
+        assert_eq!(detect_x86_constant_return(&bytes), None);
+    }
+
+    #[test]
+    fn test_detect_arm64_return_constant() {
+        // Test ARM64 pattern: movz w0, #2; ret
+        // MOVZ w0, #2: 0x52800040 (little-endian: 40 00 80 52)
+        // RET: 0xD65F03C0 (little-endian: C0 03 5F D6)
+        let bytes = vec![0x40, 0x00, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6];
+        assert_eq!(detect_arm64_constant_return(&bytes), Some(2));
+
+        // MOVZ w0, #0: 0x52800000
+        let bytes = vec![0x00, 0x00, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6];
+        assert_eq!(detect_arm64_constant_return(&bytes), Some(0));
+    }
+
+    #[test]
+    fn test_stub_analysis_is_stub() {
+        // Create a StubAnalysis for a stub function (returns ADBC_STATUS_NOT_IMPLEMENTED)
+        let analysis = StubAnalysis {
+            symbol_name: "AdbcDatabaseSetOption".to_string(),
+            is_stub: true,
+            constant_return: Some(2),
+            status_code: Some(AdbcStatusCode::NotImplemented),
+        };
+
+        assert_eq!(analysis.symbol_name, "AdbcDatabaseSetOption");
+        assert!(analysis.is_stub);
+        assert_eq!(analysis.constant_return, Some(2));
+        assert_eq!(analysis.status_code, Some(AdbcStatusCode::NotImplemented));
+    }
+
+    #[test]
+    fn test_stub_analysis_not_stub() {
+        // Create a StubAnalysis for a non-stub function (returns ADBC_STATUS_OK)
+        let analysis = StubAnalysis {
+            symbol_name: "AdbcDriverInit".to_string(),
+            is_stub: false,
+            constant_return: Some(0),
+            status_code: Some(AdbcStatusCode::Ok),
+        };
+
+        assert_eq!(analysis.symbol_name, "AdbcDriverInit");
+        assert!(!analysis.is_stub);
+        assert_eq!(analysis.constant_return, Some(0));
+        assert_eq!(analysis.status_code, Some(AdbcStatusCode::Ok));
+    }
 }
