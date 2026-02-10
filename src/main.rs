@@ -848,13 +848,13 @@ fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
         return String::from("<p>No driver release data available</p>");
     }
 
-    // SVG dimensions
-    let width = 900.0;
-    let height = 500.0;
-    let margin_left = 60.0;
-    let margin_right = 40.0;
-    let margin_top = 60.0;
-    let margin_bottom = 80.0;
+    // SVG dimensions (Tufte-style: smaller, minimal)
+    let width = 600.0;
+    let height = 300.0;
+    let margin_left = 40.0;
+    let margin_right = 20.0;
+    let margin_top = 40.0;
+    let margin_bottom = 50.0;
     let plot_width = width - margin_left - margin_right;
     let plot_height = height - margin_top - margin_bottom;
 
@@ -864,88 +864,58 @@ fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     let date_range = (max_date - min_date).num_seconds() as f64;
     let max_count = plot_points.last().unwrap().1;
 
-    // Generate SVG
+    // Generate SVG (Tufte-style: no background, simple title)
     let mut svg = String::new();
     svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">", width, height));
     svg.push_str("\n");
 
-    // Background
-    svg.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#f9f9f9\"/>");
-    svg.push_str("\n");
-
-    // Title
+    // Title (smaller, less bold)
     svg.push_str(&format!(
-        "<text x=\"{}\" y=\"30\" font-size=\"20\" font-weight=\"bold\" text-anchor=\"middle\">ADBC Drivers Released Over Time</text>",
+        "<text x=\"{}\" y=\"20\" font-size=\"14\" text-anchor=\"middle\">ADBC Drivers Released Over Time</text>",
         width / 2.0
     ));
     svg.push_str("\n");
 
-    // Axes
+    // Axes (Tufte-style: very light, thin)
     svg.push_str(&format!(
-        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"black\" stroke-width=\"2\"/>",
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#999\" stroke-width=\"0.5\"/>",
         margin_left, margin_top + plot_height, margin_left + plot_width, margin_top + plot_height
     ));
     svg.push_str("\n");
     svg.push_str(&format!(
-        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"black\" stroke-width=\"2\"/>",
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#999\" stroke-width=\"0.5\"/>",
         margin_left, margin_top, margin_left, margin_top + plot_height
     ));
     svg.push_str("\n");
 
-    // Y-axis label
-    svg.push_str(&format!(
-        "<text x=\"20\" y=\"{}\" font-size=\"14\" text-anchor=\"middle\" transform=\"rotate(-90, 20, {})\">Number of Drivers</text>",
-        margin_top + plot_height / 2.0, margin_top + plot_height / 2.0
-    ));
-    svg.push_str("\n");
+    // No axis labels (Tufte-style: let the data speak)
 
-    // X-axis label
-    svg.push_str(&format!(
-        "<text x=\"{}\" y=\"{}\" font-size=\"14\" text-anchor=\"middle\">Date</text>",
-        margin_left + plot_width / 2.0, height - 20.0
-    ));
-    svg.push_str("\n");
-
-    // Y-axis ticks and grid
+    // Y-axis ticks (Tufte-style: no grid, minimal ticks)
     let y_tick_count = 5;
     for i in 0..=y_tick_count {
         let tick_value = (max_count as f64 / y_tick_count as f64 * i as f64).round() as i32;
         let y = margin_top + plot_height - (tick_value as f64 / max_count as f64 * plot_height);
 
-        // Grid line
+        // Tick label only (no grid lines)
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ddd\" stroke-width=\"1\"/>",
-            margin_left, y, margin_left + plot_width, y
-        ));
-        svg.push_str("\n");
-
-        // Tick label
-        svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"12\" text-anchor=\"end\" alignment-baseline=\"middle\">{}</text>",
-            margin_left - 10.0, y, tick_value
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#666\" text-anchor=\"end\" alignment-baseline=\"middle\">{}</text>",
+            margin_left - 5.0, y, tick_value
         ));
         svg.push_str("\n");
     }
 
-    // X-axis ticks
-    let x_tick_count = 6;
+    // X-axis ticks (Tufte-style: minimal, fewer ticks)
+    let x_tick_count = 4;
     for i in 0..=x_tick_count {
         let date_offset = date_range * i as f64 / x_tick_count as f64;
         let tick_date = min_date + chrono::Duration::seconds(date_offset as i64);
         let x = margin_left + (plot_width * i as f64 / x_tick_count as f64);
 
-        // Tick mark
-        svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"black\" stroke-width=\"1\"/>",
-            x, margin_top + plot_height, x, margin_top + plot_height + 5.0
-        ));
-        svg.push_str("\n");
-
-        // Tick label
+        // Tick label only (no tick marks)
         let date_label = tick_date.format("%Y-%m-%d").to_string();
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"11\" text-anchor=\"end\" transform=\"rotate(-45, {}, {})\">{}</text>",
-            x, margin_top + plot_height + 15.0, x, margin_top + plot_height + 15.0, date_label
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#666\" text-anchor=\"end\" transform=\"rotate(-45, {}, {})\">{}</text>",
+            x, margin_top + plot_height + 10.0, x, margin_top + plot_height + 10.0, date_label
         ));
         svg.push_str("\n");
     }
@@ -958,19 +928,102 @@ fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
         polyline_points.push_str(&format!("{},{} ", x, y));
     }
 
+    // Plot line (Tufte-style: black, no decoration)
     svg.push_str(&format!(
-        "<polyline points=\"{}\" fill=\"none\" stroke=\"#2563eb\" stroke-width=\"3\"/>",
+        "<polyline points=\"{}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.5\"/>",
         polyline_points.trim()
     ));
     svg.push_str("\n");
 
-    // Plot points
-    for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
-        let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
+    svg.push_str("</svg>\n");
+    svg
+}
+
+/// Generate a Tufte-style horizontal bar chart
+fn generate_bar_chart(csv: &str, title: &str) -> String {
+    // Parse CSV to extract names and values
+    let mut data: Vec<(String, f64)> = Vec::new();
+
+    for (idx, line) in csv.lines().enumerate() {
+        if idx == 0 {
+            continue; // Skip header
+        }
+
+        let cells = parse_csv_line(line);
+        if cells.len() >= 2 {
+            let name = &cells[0];
+            if let Ok(value) = cells[1].parse::<f64>() {
+                data.push((name.clone(), value));
+            }
+        }
+    }
+
+    if data.is_empty() {
+        return String::from("<p>No data available</p>");
+    }
+
+    // SVG dimensions (Tufte-style: compact)
+    let width = 500.0;
+    let bar_height = 20.0;
+    let bar_spacing = 5.0;
+    let margin_left = 100.0;
+    let margin_right = 80.0;
+    let margin_top = 30.0;
+    let margin_bottom = 10.0;
+    let plot_width = width - margin_left - margin_right;
+
+    let total_bars = data.len() as f64;
+    let height = margin_top + margin_bottom + (total_bars * (bar_height + bar_spacing));
+
+    // Find max value for scaling
+    let max_value = data.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+
+    // Determine if we should convert to MB (for library sizes)
+    let is_bytes = title.contains("MB");
+    let divisor = if is_bytes { 1_048_576.0 } else { 1.0 };
+    let scaled_max = max_value / divisor;
+
+    // Generate SVG
+    let mut svg = String::new();
+    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">", width, height));
+    svg.push_str("\n");
+
+    // Title
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"20\" font-size=\"14\" text-anchor=\"middle\">{}</text>",
+        width / 2.0, title
+    ));
+    svg.push_str("\n");
+
+    // Draw bars
+    for (i, (name, value)) in data.iter().enumerate() {
+        let y = margin_top + (i as f64 * (bar_height + bar_spacing));
+        let scaled_value = value / divisor;
+        let bar_width = (scaled_value / scaled_max) * plot_width;
+
+        // Bar
         svg.push_str(&format!(
-            "<circle cx=\"{}\" cy=\"{}\" r=\"4\" fill=\"#2563eb\"/>",
-            x, y
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"black\"/>",
+            margin_left, y, bar_width, bar_height
+        ));
+        svg.push_str("\n");
+
+        // Label (name)
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#333\" text-anchor=\"end\" alignment-baseline=\"middle\">{}</text>",
+            margin_left - 5.0, y + bar_height / 2.0, name
+        ));
+        svg.push_str("\n");
+
+        // Value
+        let value_text = if is_bytes {
+            format!("{:.1}", scaled_value)
+        } else {
+            format!("{:.0}", scaled_value)
+        };
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#666\" alignment-baseline=\"middle\">{}</text>",
+            margin_left + bar_width + 5.0, y + bar_height / 2.0, value_text
         ));
         svg.push_str("\n");
     }
@@ -1034,6 +1087,48 @@ async fn html() -> Result<()> {
 
     let timeline_csv = String::from_utf8_lossy(&timeline_output.stdout);
 
+    // Query releases per driver
+    let releases_chart_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT name, COUNT(*) as count FROM read_parquet('releases.parquet') GROUP BY name ORDER BY count DESC")
+        .output()?;
+
+    if !releases_chart_output.status.success() {
+        return Err(error::AdbcIndexError::Config(
+            format!("DuckDB error reading releases chart: {}", String::from_utf8_lossy(&releases_chart_output.stderr))
+        ));
+    }
+    let releases_chart_csv = String::from_utf8_lossy(&releases_chart_output.stdout);
+
+    // Query average library size per driver
+    let libraries_chart_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT name, AVG(library_size_bytes) as avg_size FROM read_parquet('libraries.parquet') GROUP BY name ORDER BY avg_size DESC")
+        .output()?;
+
+    if !libraries_chart_output.status.success() {
+        return Err(error::AdbcIndexError::Config(
+            format!("DuckDB error reading libraries chart: {}", String::from_utf8_lossy(&libraries_chart_output.stderr))
+        ));
+    }
+    let libraries_chart_csv = String::from_utf8_lossy(&libraries_chart_output.stdout);
+
+    // Query symbol count per driver
+    let symbols_chart_output = Command::new("duckdb")
+        .arg("-csv")
+        .arg("-c")
+        .arg("SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('symbols.parquet') GROUP BY name ORDER BY symbol_count DESC")
+        .output()?;
+
+    if !symbols_chart_output.status.success() {
+        return Err(error::AdbcIndexError::Config(
+            format!("DuckDB error reading symbols chart: {}", String::from_utf8_lossy(&symbols_chart_output.stderr))
+        ));
+    }
+    let symbols_chart_csv = String::from_utf8_lossy(&symbols_chart_output.stdout);
+
     // Use DuckDB to convert parquet to CSV
     let drivers_csv_output = Command::new("duckdb")
         .arg("-csv")
@@ -1090,8 +1185,11 @@ async fn html() -> Result<()> {
 
     println!("🔨 Generating HTML...");
 
-    // Generate driver timeline SVG
+    // Generate charts
     let timeline_svg = generate_driver_timeline_svg(&timeline_csv);
+    let releases_chart_svg = generate_bar_chart(&releases_chart_csv, "Releases per Driver");
+    let libraries_chart_svg = generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
+    let symbols_chart_svg = generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
 
     // Generate HTML
     let mut html = String::new();
@@ -1113,18 +1211,24 @@ async fn html() -> Result<()> {
     html.push_str(&csv_to_html_table(&drivers_csv));
     html.push_str("\n");
 
-    // Releases table
+    // Releases section
     html.push_str("<h2>Releases</h2>\n");
+    html.push_str(&releases_chart_svg);
+    html.push_str("\n");
     html.push_str(&csv_to_html_table(&releases_csv));
     html.push_str("\n");
 
-    // Libraries table
+    // Libraries section
     html.push_str("<h2>Libraries</h2>\n");
+    html.push_str(&libraries_chart_svg);
+    html.push_str("\n");
     html.push_str(&csv_to_html_table(&libraries_csv));
     html.push_str("\n");
 
-    // Symbols table
+    // Symbols section
     html.push_str("<h2>Symbols</h2>\n");
+    html.push_str(&symbols_chart_svg);
+    html.push_str("\n");
     html.push_str(&csv_to_html_table(&symbols_csv));
     html.push_str("\n");
 
