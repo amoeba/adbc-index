@@ -5,6 +5,7 @@ mod error;
 mod github;
 mod models;
 mod parquet;
+mod progress;
 mod pypi;
 mod stub_detector;
 mod symbols;
@@ -56,11 +57,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
         )
     })?;
 
-    println!("🚀 adbc-index download - Downloading from GitHub and PyPI releases");
-    println!();
-
     // Load configuration
-    println!("📋 Loading configuration from {:?}", config);
     let mut drivers = config::load_config(&config)?;
 
     // Filter to specific driver if requested
@@ -71,44 +68,35 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                 format!("Driver '{}' not found in configuration", driver_name)
             ));
         }
-        println!("   Syncing only driver: {}", driver_name);
-    } else {
-        println!("   Found {} drivers", drivers.len());
     }
-    println!();
 
     // Create GitHub client
-    println!("🔑 Using GitHub token for authentication");
-    println!();
     let gh_client = github::GitHubClient::new(Some(github_token))?;
 
     // Create PyPI client
     let pypi_client = pypi::PyPIClient::new()?;
 
     // Check rate limit for GitHub only
-    let rate_limit = gh_client.check_rate_limit().await?;
-    println!(
-        "⚡ GitHub API Rate Limit: {}/{}",
-        rate_limit.remaining, rate_limit.limit
-    );
-    println!();
+    let _rate_limit = gh_client.check_rate_limit().await?;
+
+    // Create progress tracker
+    let progress = progress::ProgressTracker::new(drivers.len() as u64, "Download");
+    progress.set_message("Fetching releases");
 
     // Fetch releases for all drivers
     let mut download_tasks = Vec::new();
     let mut cached_count = 0;
     let mut driver_fetch_errors = 0;
 
-    for driver in &drivers {
-        println!("📦 Fetching releases for {}", driver.name);
+    for (idx, driver) in drivers.iter().enumerate() {
+        let driver_progress = progress.add_spinner(&driver.name, "Fetching releases");
 
         // Fetch releases based on source type
         let releases_result = match &driver.source {
             models::DriverSource::GitHub { owner, repo } => {
-                println!("   Source: GitHub ({}/{})", owner, repo);
                 gh_client.fetch_releases(owner, repo).await
             }
             models::DriverSource::PyPI { package } => {
-                println!("   Source: PyPI ({})", package);
                 pypi_client.fetch_releases(package).await
                     .map(|pypi_releases| pypi::pypi_to_github_releases(pypi_releases, package))
             }
@@ -116,30 +104,20 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
         match releases_result {
             Ok(mut releases) => {
-                println!("   Found {} releases", releases.len());
-
                 // Filter releases by version requirement if specified
                 if let Some(ref version_req) = driver.version_req {
-                    let original_count = releases.len();
                     releases.retain(|release| {
                         if let Some(version_str) = ReleaseRecord::parse_version(&release.tag_name) {
-                            // Try to parse as semver
                             if let Ok(version) = semver::Version::parse(&version_str) {
                                 return version_req.matches(&version);
                             }
                         }
-                        // If we can't parse the version, include it (to be safe)
                         true
                     });
-                    let filtered_count = original_count - releases.len();
-                    if filtered_count > 0 {
-                        println!("   Filtered out {} releases not matching version requirement", filtered_count);
-                    }
                 }
 
                 let mut driver_new = 0;
                 let mut driver_cached = 0;
-                let mut driver_filtered = 0;
 
                 for release in &releases {
                     let tag = release.tag_name.clone();
@@ -147,26 +125,16 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
                     // Save release JSON to cache directory
                     let release_dir = cache_dir.join(&driver.name).join(&sanitized_tag);
-                    if let Err(e) = std::fs::create_dir_all(&release_dir) {
-                        eprintln!("⚠️  Failed to create release directory: {}", e);
-                    } else {
+                    if std::fs::create_dir_all(&release_dir).is_ok() {
                         let release_json_path = release_dir.join("release.json");
-                        match serde_json::to_string_pretty(&release) {
-                            Ok(json) => {
-                                if let Err(e) = std::fs::write(&release_json_path, json) {
-                                    eprintln!("⚠️  Failed to write release.json: {}", e);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("⚠️  Failed to serialize release JSON: {}", e);
-                            }
+                        if let Ok(json) = serde_json::to_string_pretty(&release) {
+                            let _ = std::fs::write(&release_json_path, json);
                         }
                     }
 
                     for asset in &release.assets {
                         // Skip artifacts that don't match the filter pattern
                         if !driver.matches_artifact(&asset.name) {
-                            driver_filtered += 1;
                             continue;
                         }
 
@@ -176,11 +144,9 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                             .join(&sanitized_tag)
                             .join(&asset.name);
 
-                        // Get SHA256 sidecar path
                         let sha256_filename = format!("{}.sha256", asset.name);
                         let sha256_path = cache_path.parent().unwrap().join(&sha256_filename);
 
-                        // Consider it cached if both the file and its SHA256 sidecar exist
                         let already_cached = cache_path.exists() && sha256_path.exists();
 
                         if already_cached {
@@ -199,41 +165,38 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                     }
                 }
 
-                if driver_filtered > 0 {
-                    println!("   Artifacts: {} new, {} cached, {} filtered", driver_new, driver_cached, driver_filtered);
-                } else {
-                    println!("   Artifacts: {} new, {} cached", driver_new, driver_cached);
-                }
+                driver_progress.finish_with_message(format!("{} new, {} cached", driver_new, driver_cached));
             }
             Err(e) => {
-                eprintln!("   ⚠️  Error fetching releases: {}", e);
-                eprintln!("   Continuing with other drivers...");
+                driver_progress.finish_with_message(format!("Error: {}", e));
                 driver_fetch_errors += 1;
             }
         }
 
-        println!();
+        progress.set_position((idx + 1) as u64);
     }
 
     // Fail if any driver failed to fetch
     if driver_fetch_errors > 0 {
+        progress.finish_with_message("Failed");
         return Err(error::AdbcIndexError::Config(
-            format!("Failed to fetch releases from {} driver(s). Sync aborted.", driver_fetch_errors)
+            format!("Failed to fetch releases from {} driver(s)", driver_fetch_errors)
         ));
     }
 
-    println!("📊 Sync summary:");
-    println!("   {} artifacts already cached", cached_count);
-    println!("   {} artifacts to download", download_tasks.len());
-    println!();
+    progress.finish_with_message(&format!("{} cached, {} to download", cached_count, download_tasks.len()));
 
     // Download artifacts
     if !download_tasks.is_empty() {
-        println!("⬇️  Downloading {} artifacts...", download_tasks.len());
-        println!();
+        let download_progress = progress::ProgressTracker::new(download_tasks.len() as u64, "Download");
+        download_progress.set_message("Downloading artifacts");
 
         let download_manager =
-            download::DownloadManager::new(cache_dir.clone(), concurrent_downloads)?;
+            download::DownloadManager::with_progress(
+                cache_dir.clone(),
+                concurrent_downloads,
+                download_progress.multi()
+            )?;
 
         let results = download_manager.download_all(download_tasks).await;
 
@@ -244,54 +207,48 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             match result {
                 Ok(_) => {
                     success_count += 1;
+                    download_progress.inc(1);
                 }
-                Err(e) => {
-                    eprintln!("   ⚠️  Download error: {}", e);
+                Err(_) => {
                     error_count += 1;
+                    download_progress.inc(1);
                 }
             }
         }
 
-        println!();
-        println!(
-            "✅ Download complete: {} artifacts downloaded ({} errors)",
-            success_count, error_count
-        );
-        println!("Cache directory: {:?}", cache_dir);
-
         if error_count > 0 {
+            download_progress.finish_with_message(&format!("{} downloaded, {} errors", success_count, error_count));
             return Err(error::AdbcIndexError::Download {
                 url: "multiple".to_string(),
-                reason: format!("{} artifact(s) failed to download", error_count),
+                reason: format!("{} artifact(s) failed", error_count),
             });
+        } else {
+            download_progress.finish_with_message(&format!("{} artifacts downloaded", success_count));
         }
-    } else {
-        println!("✅ No new artifacts to download");
     }
 
     Ok(())
 }
 
 async fn build() -> Result<()> {
-    println!("🔨 adbc-index build - Download, analyze, and generate HTML");
-    println!();
+    let build_progress = progress::ProgressTracker::new(3, "Build");
 
     // Step 1: Download releases
-    println!("📥 Step 1/3: Downloading releases...");
+    build_progress.set_message("Step 1/3: Downloading releases");
     download(None).await?;
-    println!();
+    build_progress.inc(1);
 
     // Step 2: Generate parquet reports
-    println!("📊 Step 2/3: Generating parquet reports...");
+    build_progress.set_message("Step 2/3: Analyzing and generating reports");
     report().await?;
-    println!();
+    build_progress.inc(1);
 
     // Step 3: Generate HTML dashboard
-    println!("🌐 Step 3/3: Generating HTML dashboard...");
+    build_progress.set_message("Step 3/3: Generating HTML dashboard");
     html().await?;
+    build_progress.inc(1);
 
-    println!();
-    println!("✨ Build complete!");
+    build_progress.finish_with_message("Build complete");
 
     Ok(())
 }
@@ -355,28 +312,18 @@ async fn process_driver(
     let mut release_data_vec: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>))> = Vec::new();
     let mut library_count = 0;
 
-    println!("📦 Loading cached releases for {}", driver.name);
-
     let mut releases = load_cached_releases(&cache_dir, &driver.name)?;
-    println!("   Found {} releases in cache", releases.len());
 
     // Filter releases by version requirement if specified
     if let Some(ref version_req) = driver.version_req {
-        let original_count = releases.len();
         releases.retain(|release| {
             if let Some(version_str) = models::ReleaseRecord::parse_version(&release.tag_name) {
-                // Try to parse as semver
                 if let Ok(version) = semver::Version::parse(&version_str) {
                     return version_req.matches(&version);
                 }
             }
-            // If we can't parse the version, include it (to be safe)
             true
         });
-        let filtered_count = original_count - releases.len();
-        if filtered_count > 0 {
-            println!("   Filtered out {} releases not matching version requirement", filtered_count);
-        }
     }
 
     for release in &releases {
@@ -450,8 +397,8 @@ async fn process_driver(
                                     });
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("   ⚠️  Failed to extract symbols and stubs from {}: {}", lib_info.name, e);
+                            Err(_e) => {
+                                // Silently skip symbol extraction errors
                             }
                         }
                     }
@@ -478,9 +425,6 @@ async fn process_driver(
         }
     }
 
-    let total_artifacts: usize = releases.iter().map(|r| r.assets.len()).sum();
-    println!("   Total artifacts: {}", total_artifacts);
-
     // Extract repo owner and name based on source type
     let (repo_owner, repo_name) = match &driver.source {
         models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
@@ -502,20 +446,18 @@ async fn report() -> Result<()> {
     let config = PathBuf::from("drivers.toml");
     let cache_dir = PathBuf::from("cache");
 
-    println!("📊 adbc-index report - Generating parquet reports");
-    println!();
-
     // Load configuration
-    println!("📋 Loading configuration from {:?}", config);
     let drivers = config::load_config(&config)?;
-    println!("   Found {} drivers", drivers.len());
-    println!();
 
     use std::collections::{HashMap, HashSet};
     use models::DriverRecord;
 
     // Configure symbol filter - only extract symbols starting with "Adbc"
     let symbol_filter = symbols::SymbolFilter::default();
+
+    // Create progress tracker
+    let analyze_progress = progress::ProgressTracker::new(drivers.len() as u64, "Analyze");
+    analyze_progress.set_message("Processing drivers");
 
     // Process all drivers in parallel
     let mut tasks = Vec::new();
@@ -524,7 +466,6 @@ async fn report() -> Result<()> {
         let symbol_filter_clone = symbol_filter.clone();
 
         let task = tokio::task::spawn_blocking(move || {
-            // Use tokio::runtime::Handle to run async code from blocking context
             tokio::runtime::Handle::current().block_on(
                 process_driver(driver, cache_dir_clone, symbol_filter_clone)
             )
@@ -542,6 +483,8 @@ async fn report() -> Result<()> {
     for task in tasks {
         match task.await {
             Ok(Ok(result)) => {
+                let driver_name = result.driver_name.clone();
+
                 // Merge results
                 library_records.extend(result.library_records);
                 symbol_records.extend(result.symbol_records);
@@ -556,23 +499,24 @@ async fn report() -> Result<()> {
                     result.driver_name,
                     (result.repo_owner, result.repo_name, result.library_count)
                 );
+
+                analyze_progress.inc(1);
             }
             Ok(Err(e)) => {
-                eprintln!("   ⚠️  Error processing driver: {}", e);
+                analyze_progress.inc(1);
             }
             Err(e) => {
-                eprintln!("   ⚠️  Task join error: {}", e);
+                analyze_progress.inc(1);
             }
         }
     }
 
-    println!();
-
-    println!("📊 Total library records: {}", library_records.len());
-    println!("📊 Total symbol records: {}", symbol_records.len());
-    println!("📊 Total releases: {}", release_data.len());
-    println!("📊 Total drivers: {}", driver_stats.len());
-    println!();
+    analyze_progress.finish_with_message(&format!(
+        "{} drivers, {} libraries, {} symbols",
+        driver_stats.len(),
+        library_records.len(),
+        symbol_records.len()
+    ));
 
     // Calculate first and latest release for each driver
     let mut driver_first_latest: HashMap<String, (chrono::DateTime<chrono::Utc>, Option<String>, chrono::DateTime<chrono::Utc>, Option<String>)> = HashMap::new();
@@ -657,52 +601,46 @@ async fn report() -> Result<()> {
     let dist_dir = PathBuf::from("dist");
     std::fs::create_dir_all(&dist_dir)?;
 
+    let write_progress = progress::ProgressTracker::new(4, "Write");
+    write_progress.set_message("Writing parquet files");
+
     // Write drivers.parquet
     let drivers_output = dist_dir.join("drivers.parquet");
-    println!("💾 Writing to {:?}", drivers_output);
     let mut drivers_writer = parquet::DriversWriter::new(&drivers_output)?;
     for record in driver_records {
         drivers_writer.add_record(record)?;
     }
     drivers_writer.close()?;
-    println!("   ✓ Written {} drivers", driver_stats.len());
+    write_progress.inc(1);
 
     // Write releases.parquet
     let releases_output = dist_dir.join("releases.parquet");
-    println!("💾 Writing to {:?}", releases_output);
     let mut releases_writer = parquet::ReleasesWriter::new(&releases_output)?;
     for record in release_records {
         releases_writer.add_record(record)?;
     }
     releases_writer.close()?;
-    println!("   ✓ Written {} releases", library_records.len());
+    write_progress.inc(1);
 
     // Write libraries.parquet
     let libraries_output = dist_dir.join("libraries.parquet");
-    println!("💾 Writing to {:?}", libraries_output);
     let mut libraries_writer = parquet::LibrariesWriter::new(&libraries_output)?;
     for record in library_records {
         libraries_writer.add_record(record)?;
     }
     libraries_writer.close()?;
+    write_progress.inc(1);
 
     // Write symbols.parquet
     let symbols_output = dist_dir.join("symbols.parquet");
-    println!("💾 Writing to {:?}", symbols_output);
     let mut symbols_writer = parquet::SymbolsWriter::new(&symbols_output)?;
     for record in symbol_records {
         symbols_writer.add_record(record)?;
     }
     symbols_writer.close()?;
+    write_progress.inc(1);
 
-    println!();
-    println!("✨ Done!");
-    println!();
-    println!("Output files:");
-    println!("  - {:?}", drivers_output);
-    println!("  - {:?}", releases_output);
-    println!("  - {:?}", libraries_output);
-    println!("  - {:?}", symbols_output);
+    write_progress.finish_with_message("Parquet files written");
 
     Ok(())
 }
@@ -1118,9 +1056,6 @@ fn generate_bar_chart(csv: &str, title: &str) -> String {
 async fn html() -> Result<()> {
     use std::process::Command;
 
-    println!("🌐 adbc-index html - Generating HTML dashboard");
-    println!();
-
     let output_dir = PathBuf::from("dist");
     let drivers_path = output_dir.join("drivers.parquet");
     let releases_path = output_dir.join("releases.parquet");
@@ -1129,31 +1064,13 @@ async fn html() -> Result<()> {
     let output_file = output_dir.join("index.html");
 
     // Check if parquet files exist
-    if !drivers_path.exists() {
+    if !drivers_path.exists() || !releases_path.exists() || !libraries_path.exists() || !symbols_path.exists() {
         return Err(error::AdbcIndexError::Config(
-            "dist/drivers.parquet not found. Run 'adbc-index build' first.".to_string(),
-        ));
-    }
-    if !releases_path.exists() {
-        return Err(error::AdbcIndexError::Config(
-            "dist/releases.parquet not found. Run 'adbc-index build' first.".to_string(),
-        ));
-    }
-    if !libraries_path.exists() {
-        return Err(error::AdbcIndexError::Config(
-            "dist/libraries.parquet not found. Run 'adbc-index build' first.".to_string(),
-        ));
-    }
-    if !symbols_path.exists() {
-        return Err(error::AdbcIndexError::Config(
-            "dist/symbols.parquet not found. Run 'adbc-index build' first.".to_string(),
+            "Parquet files not found. Run 'adbc-index build' first.".to_string(),
         ));
     }
 
-    // Create output directory
     std::fs::create_dir_all(&output_dir)?;
-
-    println!("📖 Reading parquet files with DuckDB...");
 
     // Query driver timeline data (name and first release date)
     let timeline_output = Command::new("duckdb")
@@ -1266,8 +1183,6 @@ async fn html() -> Result<()> {
     let libraries_csv = String::from_utf8_lossy(&libraries_csv_output.stdout);
     let symbols_csv = String::from_utf8_lossy(&symbols_csv_output.stdout);
 
-    println!("🔨 Generating HTML...");
-
     // Generate charts
     let timeline_svg = generate_driver_timeline_svg(&timeline_csv);
     let releases_chart_svg = generate_bar_chart(&releases_chart_csv, "Releases per Driver");
@@ -1328,10 +1243,6 @@ async fn html() -> Result<()> {
 
     // Write HTML file
     std::fs::write(&output_file, html)?;
-
-    println!("✨ Done!");
-    println!();
-    println!("Output file: {:?}", output_file);
 
     Ok(())
 }

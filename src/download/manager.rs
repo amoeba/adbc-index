@@ -46,6 +46,18 @@ impl DownloadManager {
         })
     }
 
+    pub fn with_progress(cache_dir: PathBuf, max_concurrent: usize, multi_progress: Arc<MultiProgress>) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .build()?;
+
+        Ok(Self {
+            client,
+            cache_dir,
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            multi_progress: (*multi_progress).clone(),
+        })
+    }
+
     /// Download all tasks concurrently with rate limiting
     pub async fn download_all(&self, tasks: Vec<DownloadTask>) -> Vec<Result<DownloadResult>> {
         let mut handles = Vec::new();
@@ -99,9 +111,7 @@ impl DownloadManager {
                         // File exists and integrity verified
                         // Extract .tar.gz if not already extracted
                         if task.artifact_name.ends_with(".tar.gz") {
-                            if let Err(e) = extract_tar_gz(&cache_path).await {
-                                eprintln!("⚠️  Failed to extract {}: {}", task.artifact_name, e);
-                            }
+                            let _ = extract_tar_gz(&cache_path).await;
                         }
 
                         return Ok(DownloadResult {
@@ -109,9 +119,6 @@ impl DownloadManager {
                             sha256: computed_sha256,
                             path: cache_path,
                         });
-                    } else {
-                        // SHA256 mismatch, re-download
-                        eprintln!("⚠️  SHA256 mismatch for {}, re-downloading", task.artifact_name);
                     }
                 }
             }
@@ -136,9 +143,9 @@ impl DownloadManager {
         let pb = self.multi_progress.add(ProgressBar::new(task.expected_size as u64));
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{msg}\n{wide_bar} {bytes}/{total_bytes} ({eta})")
+                .template("  ├─ {msg} [{bar:30}] {bytes}/{total_bytes}")
                 .unwrap()
-                .progress_chars("#>-"),
+                .progress_chars("█▓░"),
         );
         pb.set_message(format!("{}/{}", task.driver_name, task.artifact_name));
 
@@ -161,21 +168,17 @@ impl DownloadManager {
         }
 
         file.flush().await?;
-        pb.finish_with_message(format!("{}/{} ✓", task.driver_name, task.artifact_name));
+        pb.finish_and_clear();
 
         let sha256 = format!("{:x}", hasher.finalize());
 
         // Write SHA256 to sidecar file
         let sha256_path = get_sha256_path(&cache_path);
-        if let Err(e) = fs::write(&sha256_path, &sha256).await {
-            eprintln!("⚠️  Failed to write SHA256 for {}: {}", task.artifact_name, e);
-        }
+        let _ = fs::write(&sha256_path, &sha256).await;
 
         // Extract .tar.gz files after download
         if task.artifact_name.ends_with(".tar.gz") {
-            if let Err(e) = extract_tar_gz(&cache_path).await {
-                eprintln!("⚠️  Failed to extract {}: {}", task.artifact_name, e);
-            }
+            let _ = extract_tar_gz(&cache_path).await;
         }
 
         Ok(DownloadResult {
