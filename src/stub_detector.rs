@@ -1,3 +1,4 @@
+use capstone::prelude::*;
 use goblin::Object;
 use std::fs::File;
 use std::io::Read;
@@ -121,19 +122,36 @@ pub fn analyze_elf_stubs_with_buffer(
                 && (sym.st_bind() == goblin::elf::sym::STB_GLOBAL
                     || sym.st_bind() == goblin::elf::sym::STB_WEAK)
             {
-                let offset = sym.st_value as usize;
-                let size = sym.st_size as usize;
+                // Map virtual address (st_value) to file offset using section headers
+                if let Some(file_offset) = elf_vaddr_to_file_offset(elf, sym.st_value) {
+                    let offset = file_offset as usize;
+                    let size = sym.st_size as usize;
 
-                if size > 0 && offset + size <= buffer.len() {
-                    let func_bytes = &buffer[offset..offset + size.min(50)];
-                    let analysis = analyze_x86_function(name, func_bytes);
-                    results.push(analysis);
+                    if size > 0 && offset + size <= buffer.len() {
+                        let func_bytes = &buffer[offset..offset + size.min(50)];
+                        let analysis = analyze_x86_function(name, func_bytes);
+                        results.push(analysis);
+                    }
                 }
             }
         }
     }
 
     Ok(results)
+}
+
+/// Convert ELF virtual address to file offset using section headers
+fn elf_vaddr_to_file_offset(elf: &goblin::elf::Elf, vaddr: u64) -> Option<u64> {
+    for section in &elf.section_headers {
+        // Only consider sections that are loaded into memory (ALLOC flag)
+        if section.sh_flags & goblin::elf::section_header::SHF_ALLOC as u64 != 0 {
+            if vaddr >= section.sh_addr && vaddr < section.sh_addr + section.sh_size {
+                let offset_in_section = vaddr - section.sh_addr;
+                return Some(section.sh_offset + offset_in_section);
+            }
+        }
+    }
+    None
 }
 
 /// Section information for RVA to file offset conversion
@@ -235,7 +253,7 @@ pub fn analyze_mach_stubs_with_buffer(
     Ok(results)
 }
 
-/// Analyze x86/x64 function to detect constant returns
+/// Analyze x86/x64 function to detect constant returns using Capstone
 fn analyze_x86_function(name: &str, bytes: &[u8]) -> StubAnalysis {
     if bytes.is_empty() {
         return StubAnalysis {
@@ -246,8 +264,8 @@ fn analyze_x86_function(name: &str, bytes: &[u8]) -> StubAnalysis {
         };
     }
 
-    // Try to detect simple constant return patterns
-    let constant = detect_x86_constant_return(bytes);
+    // Try to detect simple constant return patterns using Capstone
+    let constant = disassemble_x86_constant_return(bytes);
 
     let status_code = constant.and_then(|c| AdbcStatusCode::from_i32(c));
     let is_stub = status_code == Some(AdbcStatusCode::NotImplemented);
@@ -260,7 +278,7 @@ fn analyze_x86_function(name: &str, bytes: &[u8]) -> StubAnalysis {
     }
 }
 
-/// Analyze ARM64 function to detect constant returns
+/// Analyze ARM64 function to detect constant returns using Capstone
 fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
     if bytes.len() < 8 {
         return StubAnalysis {
@@ -271,7 +289,7 @@ fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
         };
     }
 
-    let constant = detect_arm64_constant_return(bytes);
+    let constant = disassemble_arm64_constant_return(bytes);
 
     let status_code = constant.and_then(|c| AdbcStatusCode::from_i32(c));
     let is_stub = status_code == Some(AdbcStatusCode::NotImplemented);
@@ -284,95 +302,191 @@ fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
     }
 }
 
-/// Detect simple constant return patterns in x86/x64
-pub(crate) fn detect_x86_constant_return(bytes: &[u8]) -> Option<i32> {
-    if bytes.len() < 2 {
+/// Disassemble x86/x64 function to detect constant return values using Capstone
+fn disassemble_x86_constant_return(bytes: &[u8]) -> Option<i32> {
+    if bytes.is_empty() {
         return None;
     }
 
-    // Pattern 1: mov eax, imm32; ret
-    // B8 xx xx xx xx C3
-    if bytes.len() >= 6 && bytes[0] == 0xB8 && bytes[5] == 0xC3 {
-        let value = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-        return Some(value);
-    }
+    // Create Capstone disassembler for x86-64
+    let cs = Capstone::new()
+        .x86()
+        .mode(arch::x86::ArchMode::Mode64)
+        .detail(true)
+        .build()
+        .ok()?;
 
-    // Pattern 2: xor eax, eax; ret (returns 0)
-    // 31 C0 C3 or 33 C0 C3
-    if bytes.len() >= 3 && (bytes[0] == 0x31 || bytes[0] == 0x33) && bytes[1] == 0xC0 && bytes[2] == 0xC3 {
-        return Some(0);
-    }
+    // Disassemble the function
+    let insns = cs.disasm_all(bytes, 0x0).ok()?;
 
-    // Pattern 3: mov eax, small_imm; ret
-    // B8+r (for registers) or small immediate moves
-    if bytes.len() >= 2 && (bytes[0] >= 0xB8 && bytes[0] <= 0xBF) {
-        // Single byte register encoding
-        let reg = bytes[0] - 0xB8;
-        if reg == 0 && bytes.len() >= 6 { // eax
-            let value = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-            if bytes.len() > 5 && bytes[5] == 0xC3 {
-                return Some(value);
+    // Look for pattern: mov to return register (eax/rax/al) followed by ret
+    let mut last_mov_value: Option<i32> = None;
+
+    for insn in insns.as_ref() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+
+        // Check for XOR eax, eax (returns 0)
+        if mnemonic == "xor" {
+            if let Ok(detail) = cs.insn_detail(insn) {
+                let arch_detail = detail.arch_detail();
+                let ops = arch_detail.operands();
+
+                // XOR of same register = 0
+                if ops.len() == 2 {
+                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
+                        // Check if both operands are the same register (eax, rax, or al)
+                        if is_same_x86_register(op1, op2) && is_return_register_x86(op1) {
+                            last_mov_value = Some(0);
+                        }
+                    }
+                }
             }
         }
-    }
 
-    // Pattern 4: mov rax, imm; ret (64-bit with REX prefix)
-    // 48 C7 C0 xx xx xx xx C3
-    if bytes.len() >= 8 && bytes[0] == 0x48 && bytes[1] == 0xC7 && bytes[2] == 0xC0 && bytes[7] == 0xC3 {
-        let value = i32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]);
-        return Some(value);
-    }
+        // Check for MOV to return register with immediate
+        if mnemonic == "mov" || mnemonic == "movzx" {
+            if let Ok(detail) = cs.insn_detail(insn) {
+                let arch_detail = detail.arch_detail();
+                let ops = arch_detail.operands();
 
-    // Pattern 5: Simple small constant in eax
-    // B8 0X 00 00 00 C3 (values 0-15 are common)
-    if bytes.len() >= 6
-        && bytes[0] == 0xB8
-        && bytes[2] == 0x00
-        && bytes[3] == 0x00
-        && bytes[4] == 0x00
-        && bytes[5] == 0xC3
-    {
-        return Some(bytes[1] as i32);
+                // MOV dst, imm
+                if ops.len() == 2 {
+                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
+                        // First operand should be a return register (eax, rax, al)
+                        if is_return_register_x86(op1) {
+                            // Second operand should be an immediate
+                            if let capstone::arch::ArchOperand::X86Operand(x86_op) = op2 {
+                                if let capstone::arch::x86::X86OperandType::Imm(imm_val) = x86_op.op_type {
+                                    last_mov_value = Some(imm_val as i32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for RET instruction
+        if mnemonic == "ret" {
+            return last_mov_value;
+        }
     }
 
     None
 }
 
-/// Detect simple constant return patterns in ARM64
-pub(crate) fn detect_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
+/// Check if an x86 operand is a return register (eax, rax, or al)
+fn is_return_register_x86(op: &capstone::arch::ArchOperand) -> bool {
+    if let capstone::arch::ArchOperand::X86Operand(x86_op) = op {
+        if let capstone::arch::x86::X86OperandType::Reg(reg_id) = x86_op.op_type {
+            let reg = reg_id.0 as u32;
+            // Check for AL, AX, EAX, RAX
+            return reg == capstone::arch::x86::X86Reg::X86_REG_AL as u32
+                || reg == capstone::arch::x86::X86Reg::X86_REG_AX as u32
+                || reg == capstone::arch::x86::X86Reg::X86_REG_EAX as u32
+                || reg == capstone::arch::x86::X86Reg::X86_REG_RAX as u32;
+        }
+    }
+    false
+}
+
+/// Check if two x86 operands reference the same register
+fn is_same_x86_register(op1: &capstone::arch::ArchOperand, op2: &capstone::arch::ArchOperand) -> bool {
+    if let (capstone::arch::ArchOperand::X86Operand(x86_op1), capstone::arch::ArchOperand::X86Operand(x86_op2)) = (op1, op2) {
+        if let (capstone::arch::x86::X86OperandType::Reg(reg1), capstone::arch::x86::X86OperandType::Reg(reg2)) = (&x86_op1.op_type, &x86_op2.op_type) {
+            return reg1 == reg2;
+        }
+    }
+    false
+}
+
+/// Disassemble ARM64 function to detect constant return values using Capstone
+fn disassemble_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
     if bytes.len() < 8 {
         return None;
     }
 
-    // ARM64 instruction encoding is fixed 32-bit (4 bytes)
-    let instr1 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    let instr2 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    // Create Capstone disassembler for ARM64
+    let cs = Capstone::new()
+        .arm64()
+        .mode(arch::arm64::ArchMode::Arm)
+        .detail(true)
+        .build()
+        .ok()?;
 
-    // Pattern: mov w0, #imm; ret
-    // MOV (immediate) to w0 (x0 lower 32 bits) followed by RET
-    // RET is typically 0xD65F03C0
-    if instr2 == 0xD65F03C0 {
-        // Check if first instruction is MOV w0, #imm
-        // MOV is encoded as ORR with zero register: ORR Wd, WZR, #imm
-        // Or as MOVZ: 0x52800000 | (imm << 5) | 0 (w0)
+    // Disassemble the function
+    let insns = cs.disasm_all(bytes, 0x0).ok()?;
 
-        // MOVZ w0, #imm: 0101_0010_1xxx_xxxx_xxxx_xxxx_xxx0_0000
-        if (instr1 & 0xFF80_001F) == 0x5280_0000 {
-            let imm = ((instr1 >> 5) & 0xFFFF) as i32;
-            return Some(imm);
+    // Look for pattern: mov to return register (w0/x0) followed by ret
+    let mut last_mov_value: Option<i32> = None;
+
+    for insn in insns.as_ref() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+
+        // Check for MOV to return register with immediate
+        if mnemonic == "mov" || mnemonic == "movz" {
+            if let Ok(detail) = cs.insn_detail(insn) {
+                let arch_detail = detail.arch_detail();
+                let ops = arch_detail.operands();
+
+                // MOV dst, imm
+                if ops.len() == 2 {
+                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
+                        // First operand should be a return register (w0 or x0)
+                        if is_return_register_arm64(op1) {
+                            // Second operand should be an immediate
+                            if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op2 {
+                                if let capstone::arch::arm64::Arm64OperandType::Imm(imm_val) = arm64_op.op_type {
+                                    last_mov_value = Some(imm_val as i32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // MOVN w0, #imm (move NOT): 0001_0010_1xxx_xxxx_xxxx_xxxx_xxx0_0000
-        if (instr1 & 0xFF80_001F) == 0x1280_0000 {
-            let imm = ((instr1 >> 5) & 0xFFFF) as i32;
-            return Some(!imm); // MOVN stores the NOT of the immediate
+        // Check for MOVN (move NOT) - result is bitwise NOT of immediate
+        if mnemonic == "movn" {
+            if let Ok(detail) = cs.insn_detail(insn) {
+                let arch_detail = detail.arch_detail();
+                let ops = arch_detail.operands();
+
+                if ops.len() == 2 {
+                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
+                        if is_return_register_arm64(op1) {
+                            if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op2 {
+                                if let capstone::arch::arm64::Arm64OperandType::Imm(imm_val) = arm64_op.op_type {
+                                    // MOVN stores the bitwise NOT of the immediate
+                                    last_mov_value = Some(!imm_val as i32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // ORR w0, wzr, #imm (another way to encode MOV)
-        // This is more complex to decode, skip for now
+        // Check for RET instruction
+        if mnemonic == "ret" {
+            return last_mov_value;
+        }
     }
 
     None
+}
+
+/// Check if an ARM64 operand is a return register (w0 or x0)
+fn is_return_register_arm64(op: &capstone::arch::ArchOperand) -> bool {
+    if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op {
+        if let capstone::arch::arm64::Arm64OperandType::Reg(reg_id) = arm64_op.op_type {
+            let reg = reg_id.0 as u32;
+            // Check for W0 or X0
+            return reg == capstone::arch::arm64::Arm64Reg::ARM64_REG_W0 as u32
+                || reg == capstone::arch::arm64::Arm64Reg::ARM64_REG_X0 as u32;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -405,55 +519,88 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_x86_return_zero_xor() {
+    fn test_disassemble_x86_return_zero_xor() {
         // Test x86 pattern: xor eax, eax; ret (returns 0)
         // 31 C0 C3
         let bytes = vec![0x31, 0xC0, 0xC3];
-        assert_eq!(detect_x86_constant_return(&bytes), Some(0));
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(0));
 
         // Alternative encoding: 33 C0 C3
         let bytes = vec![0x33, 0xC0, 0xC3];
-        assert_eq!(detect_x86_constant_return(&bytes), Some(0));
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(0));
     }
 
     #[test]
-    fn test_detect_x86_return_constant_mov() {
+    fn test_disassemble_x86_return_constant_mov() {
         // Test x86 pattern: mov eax, 2; ret
         // B8 02 00 00 00 C3
         let bytes = vec![0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3];
-        assert_eq!(detect_x86_constant_return(&bytes), Some(2));
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(2));
 
         // Test with different constant
         let bytes = vec![0xB8, 0x0D, 0x00, 0x00, 0x00, 0xC3];
-        assert_eq!(detect_x86_constant_return(&bytes), Some(13));
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(13));
     }
 
     #[test]
-    fn test_detect_x86_no_constant_return() {
+    fn test_disassemble_x86_no_constant_return() {
         // Test complex code that doesn't have a simple constant return
         // This should return None
         let bytes = vec![0x48, 0x89, 0x5C, 0x24, 0x08, 0x57];
-        assert_eq!(detect_x86_constant_return(&bytes), None);
+        assert_eq!(disassemble_x86_constant_return(&bytes), None);
 
         // Empty bytes
-        assert_eq!(detect_x86_constant_return(&[]), None);
+        assert_eq!(disassemble_x86_constant_return(&[]), None);
 
         // Just a return without constant setup
         let bytes = vec![0xC3];
-        assert_eq!(detect_x86_constant_return(&bytes), None);
+        assert_eq!(disassemble_x86_constant_return(&bytes), None);
     }
 
     #[test]
-    fn test_detect_arm64_return_constant() {
+    fn test_disassemble_x86_with_endbr64_prefix() {
+        // Test Linux pattern with ENDBR64 prefix: endbr64; mov eax, 2; ret
+        // F3 0F 1E FA B8 02 00 00 00 C3
+        let bytes = vec![0xF3, 0x0F, 0x1E, 0xFA, 0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3];
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(2));
+
+        // Test Linux pattern with ENDBR64 prefix: endbr64; xor eax, eax; ret
+        // F3 0F 1E FA 31 C0 C3
+        let bytes = vec![0xF3, 0x0F, 0x1E, 0xFA, 0x31, 0xC0, 0xC3];
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(0));
+    }
+
+    #[test]
+    fn test_disassemble_x86_8bit_register() {
+        // Test Windows pattern: mov al, 2; ret (8-bit register)
+        // B0 02 C3
+        let bytes = vec![0xB0, 0x02, 0xC3];
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(2));
+
+        // Test Windows pattern: xor al, al; ret
+        // 32 C0 C3
+        let bytes = vec![0x32, 0xC0, 0xC3];
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(0));
+
+        // Test with different constants
+        let bytes = vec![0xB0, 0x00, 0xC3];
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(0));
+
+        let bytes = vec![0xB0, 0x0D, 0xC3];
+        assert_eq!(disassemble_x86_constant_return(&bytes), Some(13));
+    }
+
+    #[test]
+    fn test_disassemble_arm64_return_constant() {
         // Test ARM64 pattern: movz w0, #2; ret
         // MOVZ w0, #2: 0x52800040 (little-endian: 40 00 80 52)
         // RET: 0xD65F03C0 (little-endian: C0 03 5F D6)
         let bytes = vec![0x40, 0x00, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6];
-        assert_eq!(detect_arm64_constant_return(&bytes), Some(2));
+        assert_eq!(disassemble_arm64_constant_return(&bytes), Some(2));
 
         // MOVZ w0, #0: 0x52800000
         let bytes = vec![0x00, 0x00, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6];
-        assert_eq!(detect_arm64_constant_return(&bytes), Some(0));
+        assert_eq!(disassemble_arm64_constant_return(&bytes), Some(0));
     }
 
     #[test]
