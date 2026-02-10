@@ -29,6 +29,9 @@ pub enum AdbcIndexError {
     #[error("GitHub API error: {status} - {message}")]
     GitHubApi { status: u16, message: String },
 
+    #[error("PyPI API error: {status} - {message}")]
+    PyPIApi { status: u16, message: String },
+
     #[error("Missing GitHub token. Set GITHUB_TOKEN environment variable")]
     MissingToken,
 

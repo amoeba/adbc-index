@@ -1,0 +1,42 @@
+mod client;
+mod types;
+
+pub use client::PyPIClient;
+pub use types::{PyPIAsset, PyPIRelease};
+
+use crate::github::types::{Asset, Release};
+use chrono::{DateTime, Utc};
+
+/// Convert PyPI releases to GitHub Release format for compatibility
+pub fn pypi_to_github_releases(pypi_releases: Vec<PyPIRelease>, package: &str) -> Vec<Release> {
+    pypi_releases
+        .into_iter()
+        .map(|pr| {
+            let version = pr.version.clone();
+
+            // Use the earliest upload time as the published_at time
+            let published_at = pr.wheels.iter()
+                .map(|w| w.upload_time)
+                .min();
+
+            // Convert wheels to assets
+            let assets = pr.wheels
+                .into_iter()
+                .map(|wheel| Asset {
+                    name: wheel.filename,
+                    browser_download_url: wheel.url,
+                    size: wheel.size,
+                    download_count: 0,
+                })
+                .collect();
+
+            Release {
+                tag_name: version.clone(),
+                name: Some(format!("{} {}", package, version)),
+                published_at,
+                html_url: format!("https://pypi.org/project/{}/{}/", package, version),
+                assets,
+            }
+        })
+        .collect()
+}

@@ -1,11 +1,17 @@
 use chrono::{DateTime, Utc};
 
+/// Source type for a driver
+#[derive(Debug, Clone)]
+pub enum DriverSource {
+    GitHub { owner: String, repo: String },
+    PyPI { package: String },
+}
+
 /// Configuration for a single driver
 #[derive(Debug, Clone)]
 pub struct DriverConfig {
     pub name: String,
-    pub owner: String,
-    pub repo: String,
+    pub source: DriverSource,
 }
 
 /// A release record - one row per driver release

@@ -9,6 +9,15 @@ pub struct ArtifactMetadata {
 
 /// Parse artifact filename using multiple strategies
 pub fn parse_artifact(filename: &str) -> ArtifactMetadata {
+    // If it's a wheel file, use wheel-specific parsing
+    if filename.ends_with(".whl") {
+        if let Some(metadata) = strategy_wheel(filename) {
+            if metadata.is_valid() {
+                return metadata;
+            }
+        }
+    }
+
     // Try each strategy in order
     let strategies: Vec<fn(&str) -> Option<ArtifactMetadata>> = vec![
         strategy_underscore_separated,
@@ -40,6 +49,81 @@ impl ArtifactMetadata {
         // At least one field must be populated
         self.os.is_some() || self.arch.is_some() || self.version.is_some()
     }
+}
+
+/// Strategy 0: Python wheel files
+/// Example: adbc_driver_sqlite-0.1.0-py3-none-macosx_10_9_x86_64.whl
+/// Format: {package}-{version}-{python}-{abi}-{platform}.whl
+fn strategy_wheel(filename: &str) -> Option<ArtifactMetadata> {
+    if !filename.ends_with(".whl") {
+        return None;
+    }
+
+    let base = filename.trim_end_matches(".whl");
+    let parts: Vec<&str> = base.split('-').collect();
+
+    // Wheel format requires at least 5 parts: package, version, python, abi, platform
+    if parts.len() < 5 {
+        return None;
+    }
+
+    // Version is the second part
+    let version = extract_version(parts[1]);
+
+    // Platform is everything after the abi tag (may contain multiple dashes)
+    // Join the last parts to handle platforms like "macosx_10_9_x86_64"
+    let platform = parts[4..].join("-");
+
+    // Parse the wheel platform tag
+    let (os, arch) = parse_wheel_platform(&platform);
+
+    Some(ArtifactMetadata {
+        os,
+        arch,
+        version,
+        file_format: Some("whl".to_string()),
+    })
+}
+
+/// Parse wheel platform tag to OS and architecture
+/// Examples:
+/// - linux_x86_64 -> (linux, amd64)
+/// - macosx_10_9_x86_64 -> (darwin, amd64)
+/// - win_amd64 -> (windows, amd64)
+fn parse_wheel_platform(platform: &str) -> (Option<String>, Option<String>) {
+    let lower = platform.to_lowercase();
+
+    // Determine OS
+    let os = if lower.starts_with("linux") {
+        Some("linux".to_string())
+    } else if lower.starts_with("macosx") {
+        Some("darwin".to_string())
+    } else if lower.starts_with("win") {
+        Some("windows".to_string())
+    } else if lower == "any" {
+        // Platform-independent wheel (no native code)
+        None
+    } else {
+        None
+    };
+
+    // Determine architecture from the platform tag
+    let arch = if lower.contains("x86_64") || lower.contains("amd64") {
+        Some("amd64".to_string())
+    } else if lower.contains("aarch64") || lower.contains("arm64") {
+        Some("arm64".to_string())
+    } else if lower.contains("i686") || lower.contains("win32") {
+        Some("386".to_string())
+    } else if lower.contains("armv7") {
+        Some("arm".to_string())
+    } else if lower == "any" {
+        // Platform-independent
+        None
+    } else {
+        None
+    };
+
+    (os, arch)
 }
 
 /// Strategy 1: driver_os_arch_version.ext
@@ -325,5 +409,38 @@ mod tests {
         assert_eq!(meta.os, Some("windows".to_string()));
         assert_eq!(meta.arch, Some("amd64".to_string()));
         assert_eq!(meta.version, Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_wheel_linux() {
+        let meta = parse_artifact("adbc_driver_sqlite-0.1.0-py3-none-linux_x86_64.whl");
+        assert_eq!(meta.os, Some("linux".to_string()));
+        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.version, Some("0.1.0".to_string()));
+        assert_eq!(meta.file_format, Some("whl".to_string()));
+    }
+
+    #[test]
+    fn test_wheel_macos_intel() {
+        let meta = parse_artifact("adbc_driver_sqlite-0.2.0-py3-none-macosx_10_9_x86_64.whl");
+        assert_eq!(meta.os, Some("darwin".to_string()));
+        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.version, Some("0.2.0".to_string()));
+    }
+
+    #[test]
+    fn test_wheel_macos_arm() {
+        let meta = parse_artifact("adbc_driver_postgresql-1.0.0-py3-none-macosx_11_0_arm64.whl");
+        assert_eq!(meta.os, Some("darwin".to_string()));
+        assert_eq!(meta.arch, Some("arm64".to_string()));
+        assert_eq!(meta.version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_wheel_windows() {
+        let meta = parse_artifact("adbc_driver_flightsql-0.5.0-py3-none-win_amd64.whl");
+        assert_eq!(meta.os, Some("windows".to_string()));
+        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.version, Some("0.5.0".to_string()));
     }
 }

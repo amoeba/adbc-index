@@ -5,6 +5,7 @@ mod error;
 mod github;
 mod models;
 mod parquet;
+mod pypi;
 mod stub_detector;
 mod symbols;
 
@@ -51,7 +52,7 @@ async fn sync() -> Result<()> {
     // Get GitHub token (optional)
     let github_token = std::env::var("GITHUB_TOKEN").ok();
 
-    println!("🚀 adbc-index sync - Syncing with GitHub releases");
+    println!("🚀 adbc-index sync - Syncing with GitHub and PyPI releases");
     println!();
 
     // Load configuration
@@ -71,7 +72,10 @@ async fn sync() -> Result<()> {
         github::GitHubClient::new(None)?
     };
 
-    // Check rate limit
+    // Create PyPI client
+    let pypi_client = pypi::PyPIClient::new()?;
+
+    // Check rate limit for GitHub only
     let rate_limit = gh_client.check_rate_limit().await?;
     println!(
         "⚡ GitHub API Rate Limit: {}/{}",
@@ -86,9 +90,21 @@ async fn sync() -> Result<()> {
 
     for driver in &drivers {
         println!("📦 Fetching releases for {}", driver.name);
-        println!("   Repository: {}/{}", driver.owner, driver.repo);
 
-        match gh_client.fetch_releases(&driver.owner, &driver.repo).await {
+        // Fetch releases based on source type
+        let releases_result = match &driver.source {
+            models::DriverSource::GitHub { owner, repo } => {
+                println!("   Source: GitHub ({}/{})", owner, repo);
+                gh_client.fetch_releases(owner, repo).await
+            }
+            models::DriverSource::PyPI { package } => {
+                println!("   Source: PyPI ({})", package);
+                pypi_client.fetch_releases(package).await
+                    .map(|pypi_releases| pypi::pypi_to_github_releases(pypi_releases, package))
+            }
+        };
+
+        match releases_result {
             Ok(releases) => {
                 println!("   Found {} releases", releases.len());
 
@@ -256,8 +272,8 @@ struct DriverProcessResult {
     symbol_records: Vec<models::SymbolRecord>,
     release_data: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, std::collections::HashSet<String>, std::collections::HashSet<String>))>,
     driver_name: String,
-    driver_owner: String,
-    driver_repo: String,
+    repo_owner: String,
+    repo_name: String,
     library_count: usize,
 }
 
@@ -382,13 +398,19 @@ async fn process_driver(
     let total_artifacts: usize = releases.iter().map(|r| r.assets.len()).sum();
     println!("   Total artifacts: {}", total_artifacts);
 
+    // Extract repo owner and name based on source type
+    let (repo_owner, repo_name) = match &driver.source {
+        models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
+        models::DriverSource::PyPI { package } => ("pypi".to_string(), package.clone()),
+    };
+
     Ok(DriverProcessResult {
         library_records,
         symbol_records,
         release_data: release_data_vec,
         driver_name: driver.name,
-        driver_owner: driver.owner,
-        driver_repo: driver.repo,
+        repo_owner,
+        repo_name,
         library_count,
     })
 }
@@ -455,7 +477,7 @@ async fn report() -> Result<()> {
                 // Store driver stats
                 driver_stats.insert(
                     result.driver_name,
-                    (result.driver_owner, result.driver_repo, result.library_count)
+                    (result.repo_owner, result.repo_name, result.library_count)
                 );
             }
             Ok(Err(e)) => {
@@ -685,7 +707,7 @@ fn extract_and_find_library(
                 });
             }
         }
-    } else if artifact_name.ends_with(".zip") {
+    } else if artifact_name.ends_with(".zip") || artifact_name.ends_with(".whl") {
         // Extract zip
         let file = File::open(&artifact_path).ok()?;
         let mut archive = ZipArchive::new(file).ok()?;
