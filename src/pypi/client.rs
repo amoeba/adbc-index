@@ -4,6 +4,7 @@ use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 
 const PYPI_API_BASE: &str = "https://pypi.org/pypi";
 
+#[derive(Clone)]
 pub struct PyPIClient {
     client: reqwest::Client,
 }

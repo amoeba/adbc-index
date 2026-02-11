@@ -165,15 +165,6 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
                     let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(&tag);
 
-                    // Save release JSON to cache directory
-                    let release_dir = cache_dir.join(&driver.name).join(&sanitized_tag);
-                    if std::fs::create_dir_all(&release_dir).is_ok() {
-                        let release_json_path = release_dir.join("release.json");
-                        if let Ok(json) = serde_json::to_string_pretty(&release) {
-                            let _ = std::fs::write(&release_json_path, json);
-                        }
-                    }
-
                     for asset in &release.assets {
                         if std::env::var("DEBUG").is_ok() {
                             eprintln!("DEBUG:   Asset: {}", asset.name);
@@ -213,8 +204,8 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                             // Use API URL instead of browser_download_url for tags with slashes
                             // GitHub has a bug where browser_download_url doesn't work for tags with /
                             // The API url works: needs Accept: application/octet-stream header
-                            let (download_url, url_type) = if tag.contains('/') {
-                                (asset.url.clone(), "API")
+                            let (download_url, url_type) = if tag.contains('/') && asset.url.is_some() {
+                                (asset.url.clone().unwrap(), "API")
                             } else {
                                 (asset.browser_download_url.clone(), "direct")
                             };
@@ -344,40 +335,6 @@ async fn build() -> Result<()> {
     Ok(())
 }
 
-/// Load cached releases from disk for a driver
-fn load_cached_releases(cache_dir: &PathBuf, driver_name: &str) -> Result<Vec<github::types::Release>> {
-    let driver_cache = cache_dir.join(driver_name);
-    if !driver_cache.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut releases = Vec::new();
-
-    // Iterate through each tag directory
-    for entry in std::fs::read_dir(&driver_cache)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-
-        let release_json_path = entry.path().join("release.json");
-        if !release_json_path.exists() {
-            continue;
-        }
-
-        // Read and deserialize release.json
-        let json_content = std::fs::read_to_string(&release_json_path)?;
-        match serde_json::from_str::<github::types::Release>(&json_content) {
-            Ok(release) => releases.push(release),
-            Err(e) => {
-                    eprintln!("  ⚠️  Download error: {}", e);
-                eprintln!("⚠️  Failed to parse {}: {}", release_json_path.display(), e);
-            }
-        }
-    }
-
-    Ok(releases)
-}
 
 /// Result of processing a single driver
 struct DriverProcessResult {
@@ -395,6 +352,8 @@ async fn process_driver(
     driver: models::DriverConfig,
     cache_dir: PathBuf,
     symbol_filter: symbols::SymbolFilter,
+    gh_client: github::GitHubClient,
+    pypi_client: pypi::PyPIClient,
 ) -> Result<DriverProcessResult> {
     use std::collections::HashSet;
     use models::{LibraryRecord, SymbolRecord};
@@ -404,7 +363,16 @@ async fn process_driver(
     let mut release_data_vec: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>))> = Vec::new();
     let mut library_count = 0;
 
-    let mut releases = load_cached_releases(&cache_dir, &driver.name)?;
+    // Fetch releases based on source type
+    let mut releases = match &driver.source {
+        models::DriverSource::GitHub { owner, repo } => {
+            gh_client.fetch_releases(owner, repo).await?
+        }
+        models::DriverSource::PyPI { package } => {
+            let pypi_releases = pypi_client.fetch_releases(package).await?;
+            pypi::pypi_to_github_releases(pypi_releases, package)
+        }
+    };
 
     // Filter releases by version requirement if specified
     if let Some(ref version_req) = driver.version_req {
@@ -544,6 +512,11 @@ async fn report() -> Result<()> {
     use std::collections::{HashMap, HashSet};
     use models::DriverRecord;
 
+    // Create GitHub and PyPI clients
+    let github_token = std::env::var("GITHUB_TOKEN").ok();
+    let gh_client = github::GitHubClient::new(github_token)?;
+    let pypi_client = pypi::PyPIClient::new()?;
+
     // Configure symbol filter - only extract symbols starting with "Adbc"
     let symbol_filter = symbols::SymbolFilter::default();
 
@@ -556,10 +529,12 @@ async fn report() -> Result<()> {
     for driver in drivers {
         let cache_dir_clone = cache_dir.clone();
         let symbol_filter_clone = symbol_filter.clone();
+        let gh_client_clone = gh_client.clone();
+        let pypi_client_clone = pypi_client.clone();
 
         let task = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(
-                process_driver(driver, cache_dir_clone, symbol_filter_clone)
+                process_driver(driver, cache_dir_clone, symbol_filter_clone, gh_client_clone, pypi_client_clone)
             )
         });
 

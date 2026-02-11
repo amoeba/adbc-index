@@ -5,6 +5,7 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT}
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const PER_PAGE: u32 = 100;
 
+#[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
     token: Option<String>,
