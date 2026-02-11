@@ -35,7 +35,7 @@ function showError(title, message, details) {
     <p>${message}</p>
     ${details ? `<pre>${details}</pre>` : ''}
   `;
-  document.getElementById('globalLoading').insertAdjacentElement('afterend', errorDiv);
+  document.querySelector('.loading-content').appendChild(errorDiv);
 }
 
 async function initDuckDB() {
@@ -253,7 +253,11 @@ async function loadReleasesTable(customSQL) {
       cellRenderer: (params) => {
         // Auto-link URL fields
         if (key.includes('url') && params.value && typeof params.value === 'string' && params.value.startsWith('http')) {
-          return `<a href="${params.value}" target="_blank">${params.value}</a>`;
+          const link = document.createElement('a');
+          link.href = params.value;
+          link.target = '_blank';
+          link.textContent = params.value;
+          return link;
         }
         // Format array fields
         if (Array.isArray(params.value)) {
@@ -339,7 +343,11 @@ async function loadLibrariesTable(customSQL) {
       cellRenderer: (params) => {
         // Auto-link URL fields
         if (key.includes('url') && params.value && typeof params.value === 'string' && params.value.startsWith('http')) {
-          return `<a href="${params.value}" target="_blank">${params.value}</a>`;
+          const link = document.createElement('a');
+          link.href = params.value;
+          link.target = '_blank';
+          link.textContent = params.value;
+          return link;
         }
         return params.value;
       }
@@ -482,7 +490,8 @@ window.runLibrariesQuery = runLibrariesQuery;
 window.runSymbolsQuery = runSymbolsQuery;
 
 async function init() {
-  const globalLoadingEl = document.getElementById('globalLoading');
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  const mainContent = document.getElementById('mainContent');
 
   try {
     // Check if AG Grid is loaded
@@ -512,15 +521,19 @@ async function init() {
       const firstError = failures[0].reason;
       showError(
         'Failed to Load Tables',
-        `${failures.length} of 4 tables failed to load.`,
+        `${failures.length} of 4 tables failed to load. Please check the console for details.`,
         firstError.message
       );
+
+      // Keep loading overlay visible to show the error
+      return;
     } else {
       updateLoadingStep('tables', 'success', 'All tables loaded successfully');
     }
 
-    // Hide global loading indicator
-    globalLoadingEl.classList.add('hidden');
+    // Hide loading overlay and show main content
+    loadingOverlay.classList.add('hidden');
+    mainContent.classList.remove('hidden');
 
     // Add keyboard shortcuts for query execution (Enter to run, Shift+Enter for newline)
     document.getElementById('driversQuery').addEventListener('keydown', (e) => {
@@ -557,13 +570,11 @@ async function init() {
 
     showError(
       'Failed to Initialize Dashboard',
-      'The dashboard could not be loaded. Please check the console for details.',
+      'The dashboard could not be loaded. Please refresh the page or check the console for details.',
       err.message
     );
 
-    // Keep loading indicator visible but update text
-    const stepsDiv = document.getElementById('loadingSteps');
-    stepsDiv.style.marginBottom = '20px';
+    // Keep loading overlay visible to show the error
   }
 }
 

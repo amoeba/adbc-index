@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ADBC Driver Index</title>
-<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm" type="module"></script>
 <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/dist/ag-grid-community.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-grid.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-theme-alpine-dark.min.css">
@@ -28,6 +27,15 @@
 </header>
 
 <div class="container">
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-content">
+    <h2>Loading ADBC Driver Index</h2>
+    <div id="loadingSteps"></div>
+  </div>
+</div>
+
+<div id="mainContent" class="main-content hidden">
 
 <div class="stats-grid">
   <div class="stat-card">
@@ -165,8 +173,6 @@
 </div>
 </div>
 
-<div class="loading" id="globalLoading">
-  <div id="loadingSteps"></div>
 </div>
 
 </div>
