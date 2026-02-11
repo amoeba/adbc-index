@@ -61,6 +61,18 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
         )
     })?;
 
+    // Verify GitHub token works
+    let gh_client = github::GitHubClient::new(Some(github_token.clone()))?;
+    match gh_client.check_rate_limit().await {
+        Ok(rate_limit) => {
+            eprintln!("✓ GitHub token verified. Rate limit: {}/{}", rate_limit.remaining, rate_limit.limit);
+        }
+        Err(e) => {
+            eprintln!("⚠️  Warning: GitHub token may be invalid: {}", e);
+            eprintln!("   Make sure your GITHUB_TOKEN has 'public_repo' or 'repo' scope");
+        }
+    }
+
     // Load configuration
     let mut drivers = config::load_config(&config)?;
 
@@ -95,9 +107,16 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
     for (idx, driver) in drivers.iter().enumerate() {
         let driver_progress = progress.add_spinner(&driver.name, "Fetching releases");
 
+        if std::env::var("DEBUG").is_ok() {
+            eprintln!("DEBUG: Fetching releases for driver: {}", driver.name);
+        }
+
         // Fetch releases based on source type
         let releases_result = match &driver.source {
             models::DriverSource::GitHub { owner, repo } => {
+                if std::env::var("DEBUG").is_ok() {
+                    eprintln!("DEBUG: Fetching from GitHub: {}/{}", owner, repo);
+                }
                 gh_client.fetch_releases(owner, repo).await
             }
             models::DriverSource::PyPI { package } => {
@@ -106,8 +125,16 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             }
         };
 
+        if std::env::var("DEBUG").is_ok() {
+            eprintln!("DEBUG: Processing releases_result...");
+        }
+
         match releases_result {
             Ok(mut releases) => {
+                if std::env::var("DEBUG").is_ok() {
+                    eprintln!("DEBUG: Got {} releases, filtering...", releases.len());
+                }
+
                 // Filter releases by version requirement if specified
                 if let Some(ref version_req) = driver.version_req {
                     releases.retain(|release| {
@@ -123,8 +150,17 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                 let mut driver_new = 0;
                 let mut driver_cached = 0;
 
+                if std::env::var("DEBUG").is_ok() {
+                    eprintln!("DEBUG: Processing {} releases...", releases.len());
+                }
+
                 for release in &releases {
                     let tag = release.tag_name.clone();
+
+                    if std::env::var("DEBUG").is_ok() {
+                        eprintln!("DEBUG: Processing release: {}", tag);
+                    }
+
                     let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(&tag);
 
                     // Save release JSON to cache directory
@@ -137,8 +173,15 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                     }
 
                     for asset in &release.assets {
+                        if std::env::var("DEBUG").is_ok() {
+                            eprintln!("DEBUG:   Asset: {}", asset.name);
+                        }
+
                         // Skip artifacts that don't match the filter pattern
                         if !driver.matches_artifact(&asset.name) {
+                            if std::env::var("DEBUG").is_ok() {
+                                eprintln!("DEBUG:   Skipping (doesn't match filter)");
+                            }
                             continue;
                         }
 
@@ -153,18 +196,30 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
                         let already_cached = cache_path.exists() && sha256_path.exists();
 
+                        if std::env::var("DEBUG").is_ok() {
+                            eprintln!("DEBUG:   Cached: {}", already_cached);
+                        }
+
                         if already_cached {
                             cached_count += 1;
                             driver_cached += 1;
                         } else {
+                            if std::env::var("DEBUG").is_ok() {
+                                eprintln!("DEBUG:   Adding to download queue");
+                            }
+
                             // Use API URL instead of browser_download_url for tags with slashes
                             // GitHub has a bug where browser_download_url doesn't work for tags with /
                             // The API url works: needs Accept: application/octet-stream header
-                            let download_url = if tag.contains('/') {
-                                asset.url.clone()
+                            let (download_url, url_type) = if tag.contains('/') {
+                                (asset.url.clone(), "API")
                             } else {
-                                asset.browser_download_url.clone()
+                                (asset.browser_download_url.clone(), "direct")
                             };
+
+                            if std::env::var("DEBUG").is_ok() {
+                                eprintln!("DEBUG:   URL type: {} for {}", url_type, asset.name);
+                            }
 
                             download_tasks.push(download::DownloadTask {
                                 url: download_url,
@@ -178,6 +233,9 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                     }
                 }
 
+                if std::env::var("DEBUG").is_ok() {
+                    eprintln!("DEBUG: Finishing driver progress: {} new, {} cached", driver_new, driver_cached);
+                }
                 driver_progress.finish_with_message(format!("{} new, {} cached", driver_new, driver_cached));
             }
             Err(e) => {
@@ -187,7 +245,14 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             }
         }
 
+        if std::env::var("DEBUG").is_ok() {
+            eprintln!("DEBUG: Setting progress position to {}", idx + 1);
+        }
         progress.set_position((idx + 1) as u64);
+    }
+
+    if std::env::var("DEBUG").is_ok() {
+        eprintln!("DEBUG: Done processing all drivers");
     }
 
     // Fail if any driver failed to fetch
@@ -198,7 +263,15 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
         ));
     }
 
+    if std::env::var("DEBUG").is_ok() {
+        eprintln!("DEBUG: Finishing main progress: {} cached, {} to download", cached_count, download_tasks.len());
+    }
+
     progress.finish_with_message(&format!("{} cached, {} to download", cached_count, download_tasks.len()));
+
+    if std::env::var("DEBUG").is_ok() {
+        eprintln!("DEBUG: Progress finished");
+    }
 
     // Download artifacts
     if !download_tasks.is_empty() {

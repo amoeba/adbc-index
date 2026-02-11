@@ -15,6 +15,7 @@ pub struct DownloadManager {
     cache_dir: PathBuf,
     semaphore: Arc<Semaphore>,
     multi_progress: MultiProgress,
+    github_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +35,9 @@ pub struct DownloadResult {
 }
 
 impl DownloadManager {
-    pub fn new(cache_dir: PathBuf, max_concurrent: usize) -> Result<Self> {
+    pub fn new(cache_dir: PathBuf, max_concurrent: usize, github_token: Option<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
+            .user_agent("adbc-index")
             .build()?;
 
         Ok(Self {
@@ -43,11 +45,13 @@ impl DownloadManager {
             cache_dir,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             multi_progress: MultiProgress::new(),
+            github_token,
         })
     }
 
-    pub fn with_progress(cache_dir: PathBuf, max_concurrent: usize, multi_progress: Arc<MultiProgress>) -> Result<Self> {
+    pub fn with_progress(cache_dir: PathBuf, max_concurrent: usize, multi_progress: Arc<MultiProgress>, github_token: Option<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
+            .user_agent("adbc-index")
             .build()?;
 
         Ok(Self {
@@ -55,6 +59,7 @@ impl DownloadManager {
             cache_dir,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             multi_progress: (*multi_progress).clone(),
+            github_token,
         })
     }
 
@@ -90,6 +95,7 @@ impl DownloadManager {
             cache_dir: self.cache_dir.clone(),
             semaphore: self.semaphore.clone(),
             multi_progress: self.multi_progress.clone(),
+            github_token: self.github_token.clone(),
         }
     }
 
@@ -130,12 +136,29 @@ impl DownloadManager {
         }
 
         // Download file
-        let response = self.client.get(&task.url).send().await?;
+        // For GitHub API URLs, we need to send Accept: application/octet-stream
+        let mut request = self.client.get(&task.url);
+        if task.url.contains("api.github.com") {
+            request = request.header("Accept", "application/octet-stream");
+
+            // Add GitHub token if available
+            if let Some(ref token) = self.github_token {
+                // GitHub tokens can be either:
+                // - Classic PATs: use "token" prefix
+                // - Fine-grained PATs: use "Bearer" prefix
+                // Since we can't easily distinguish, try "token" first (more common)
+                request = request.header("Authorization", format!("token {}", token));
+            }
+        }
+        let response = request.send().await?;
 
         if !response.status().is_success() {
+            // Get response body for better error messages
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_default();
             return Err(AdbcIndexError::Download {
                 url: task.url.clone(),
-                reason: format!("HTTP {}", response.status()),
+                reason: format!("HTTP {} - {}", status, error_body),
             });
         }
 

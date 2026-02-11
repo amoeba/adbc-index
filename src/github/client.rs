@@ -37,13 +37,26 @@ impl GitHubClient {
                 GITHUB_API_BASE, owner, repo, PER_PAGE, page
             );
 
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Fetching page {} from: {}", page, url);
+            }
+
             let mut request = self.client.get(&url);
 
             if let Some(token) = &self.token {
-                request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+                // Use "token" prefix for classic PATs (most common format)
+                request = request.header(AUTHORIZATION, format!("token {}", token));
+            }
+
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Sending request...");
             }
 
             let response = request.send().await?;
+
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Got response with status: {}", response.status());
+            }
 
             let status = response.status();
 
@@ -60,7 +73,15 @@ impl GitHubClient {
                 });
             }
 
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Parsing JSON response...");
+            }
+
             let releases: Vec<Release> = response.json().await?;
+
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Got {} releases on page {}", releases.len(), page);
+            }
 
             if releases.is_empty() {
                 break;

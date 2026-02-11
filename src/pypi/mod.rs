@@ -23,8 +23,9 @@ pub fn pypi_to_github_releases(pypi_releases: Vec<PyPIRelease>, package: &str) -
             let assets = pr.wheels
                 .into_iter()
                 .map(|wheel| Asset {
-                    name: wheel.filename,
-                    browser_download_url: wheel.url,
+                    name: wheel.filename.clone(),
+                    browser_download_url: wheel.url.clone(),
+                    url: wheel.url,  // PyPI URLs don't have the slash issue
                     size: wheel.size,
                     download_count: 0,
                 })
