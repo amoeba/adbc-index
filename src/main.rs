@@ -16,7 +16,14 @@ use clap::{Parser, Subcommand};
 use error::Result;
 use models::ReleaseRecord;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tera::{Tera, Context};
+
+/// Context holding clients for accessing GitHub and PyPI APIs
+struct ClientContext {
+    gh_client: github::GitHubClient,
+    pypi_client: pypi::PyPIClient,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "adbc-index")]
@@ -349,11 +356,10 @@ struct DriverProcessResult {
 
 /// Process a single driver and return its results
 async fn process_driver(
+    ctx: Arc<ClientContext>,
     driver: models::DriverConfig,
     cache_dir: PathBuf,
     symbol_filter: symbols::SymbolFilter,
-    gh_client: github::GitHubClient,
-    pypi_client: pypi::PyPIClient,
 ) -> Result<DriverProcessResult> {
     use std::collections::HashSet;
     use models::{LibraryRecord, SymbolRecord};
@@ -366,10 +372,10 @@ async fn process_driver(
     // Fetch releases based on source type
     let mut releases = match &driver.source {
         models::DriverSource::GitHub { owner, repo } => {
-            gh_client.fetch_releases(owner, repo).await?
+            ctx.gh_client.fetch_releases(owner, repo).await?
         }
         models::DriverSource::PyPI { package } => {
-            let pypi_releases = pypi_client.fetch_releases(package).await?;
+            let pypi_releases = ctx.pypi_client.fetch_releases(package).await?;
             pypi::pypi_to_github_releases(pypi_releases, package)
         }
     };
@@ -514,8 +520,10 @@ async fn report() -> Result<()> {
 
     // Create GitHub and PyPI clients
     let github_token = std::env::var("GITHUB_TOKEN").ok();
-    let gh_client = github::GitHubClient::new(github_token)?;
-    let pypi_client = pypi::PyPIClient::new()?;
+    let ctx = Arc::new(ClientContext {
+        gh_client: github::GitHubClient::new(github_token)?,
+        pypi_client: pypi::PyPIClient::new()?,
+    });
 
     // Configure symbol filter - only extract symbols starting with "Adbc"
     let symbol_filter = symbols::SymbolFilter::default();
@@ -527,14 +535,13 @@ async fn report() -> Result<()> {
     // Process all drivers in parallel
     let mut tasks = Vec::new();
     for driver in drivers {
+        let ctx = Arc::clone(&ctx);
         let cache_dir_clone = cache_dir.clone();
         let symbol_filter_clone = symbol_filter.clone();
-        let gh_client_clone = gh_client.clone();
-        let pypi_client_clone = pypi_client.clone();
 
         let task = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(
-                process_driver(driver, cache_dir_clone, symbol_filter_clone, gh_client_clone, pypi_client_clone)
+                process_driver(ctx, driver, cache_dir_clone, symbol_filter_clone)
             )
         });
 
