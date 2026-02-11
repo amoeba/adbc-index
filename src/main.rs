@@ -32,6 +32,8 @@ enum Commands {
     },
     /// Download releases, analyze cache, and generate HTML dashboard
     Build,
+    /// Generate HTML dashboard from existing parquet files
+    Html,
 }
 
 #[tokio::main]
@@ -41,6 +43,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Download { driver } => download(driver).await,
         Commands::Build => build().await,
+        Commands::Html => html().await,
     }
 }
 
@@ -1129,59 +1132,7 @@ async fn html() -> Result<()> {
     }
     let symbols_chart_csv = String::from_utf8_lossy(&symbols_chart_output.stdout);
 
-    // Use DuckDB to convert parquet to CSV
-    let drivers_csv_output = Command::new("duckdb")
-        .arg("-csv")
-        .arg("-c")
-        .arg("SELECT name, repo_name, release_count, library_count, strftime(timezone('UTC', first_release_date), '%Y-%m-%d %H:%M:%S UTC') as first_release_date, first_release_version, strftime(timezone('UTC', latest_release_date), '%Y-%m-%d %H:%M:%S UTC') as latest_release_date, latest_release_version FROM read_parquet('dist/drivers.parquet')")
-        .output()?;
-
-    let releases_csv_output = Command::new("duckdb")
-        .arg("-csv")
-        .arg("-c")
-        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, release_url, os, arch FROM read_parquet('dist/releases.parquet')")
-        .output()?;
-
-    let libraries_csv_output = Command::new("duckdb")
-        .arg("-csv")
-        .arg("-c")
-        .arg("SELECT name, release_tag, version, strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date, os, arch, library_name, library_size_bytes, library_sha256, artifact_name, artifact_url FROM read_parquet('dist/libraries.parquet')")
-        .output()?;
-
-    let symbols_csv_output = Command::new("duckdb")
-        .arg("-csv")
-        .arg("-c")
-        .arg("SELECT * FROM read_parquet('dist/symbols.parquet')")
-        .output()?;
-
-    if !drivers_csv_output.status.success() {
-        return Err(error::AdbcIndexError::Config(
-            format!("DuckDB error reading drivers: {}", String::from_utf8_lossy(&drivers_csv_output.stderr))
-        ));
-    }
-
-    if !releases_csv_output.status.success() {
-        return Err(error::AdbcIndexError::Config(
-            format!("DuckDB error reading releases: {}", String::from_utf8_lossy(&releases_csv_output.stderr))
-        ));
-    }
-
-    if !libraries_csv_output.status.success() {
-        return Err(error::AdbcIndexError::Config(
-            format!("DuckDB error reading libraries: {}", String::from_utf8_lossy(&libraries_csv_output.stderr))
-        ));
-    }
-
-    if !symbols_csv_output.status.success() {
-        return Err(error::AdbcIndexError::Config(
-            format!("DuckDB error reading symbols: {}", String::from_utf8_lossy(&symbols_csv_output.stderr))
-        ));
-    }
-
-    let drivers_csv = String::from_utf8_lossy(&drivers_csv_output.stdout);
-    let releases_csv = String::from_utf8_lossy(&releases_csv_output.stdout);
-    let libraries_csv = String::from_utf8_lossy(&libraries_csv_output.stdout);
-    let symbols_csv = String::from_utf8_lossy(&symbols_csv_output.stdout);
+    println!("🔨 Generating HTML...");
 
     // Generate charts
     let timeline_svg = generate_driver_timeline_svg(&timeline_csv);
@@ -1189,62 +1140,919 @@ async fn html() -> Result<()> {
     let libraries_chart_svg = generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
     let symbols_chart_svg = generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
 
-    // Generate HTML
-    let mut html = String::new();
-    html.push_str("<!DOCTYPE html>\n");
-    html.push_str("<html>\n");
-    html.push_str("<head>\n");
-    html.push_str("<meta charset=\"UTF-8\">\n");
-    html.push_str("<title>ADBC Driver Dashboard</title>\n");
-    html.push_str("</head>\n");
-    html.push_str("<body>\n");
-    html.push_str("<h1>ADBC Driver Dashboard</h1>\n\n");
-
-    // Add data download links
-    html.push_str("<p>Download data files: ");
-    html.push_str("<a href=\"drivers.parquet\">drivers.parquet</a> | ");
-    html.push_str("<a href=\"releases.parquet\">releases.parquet</a> | ");
-    html.push_str("<a href=\"libraries.parquet\">libraries.parquet</a> | ");
-    html.push_str("<a href=\"symbols.parquet\">symbols.parquet</a>");
-    html.push_str("</p>\n\n");
-
-    // Add timeline chart
-    html.push_str(&timeline_svg);
-    html.push_str("\n");
-
-    // Drivers table
-    html.push_str("<h2>Drivers</h2>\n");
-    html.push_str(&csv_to_html_table(&drivers_csv));
-    html.push_str("\n");
-
-    // Releases section
-    html.push_str("<h2>Releases</h2>\n");
-    html.push_str(&releases_chart_svg);
-    html.push_str("\n");
-    html.push_str(&csv_to_html_table(&releases_csv));
-    html.push_str("\n");
-
-    // Libraries section
-    html.push_str("<h2>Libraries</h2>\n");
-    html.push_str(&libraries_chart_svg);
-    html.push_str("\n");
-    html.push_str(&csv_to_html_table(&libraries_csv));
-    html.push_str("\n");
-
-    // Symbols section
-    html.push_str("<h2>Symbols</h2>\n");
-    html.push_str(&symbols_chart_svg);
-    html.push_str("\n");
-    html.push_str(&csv_to_html_table(&symbols_csv));
-    html.push_str("\n");
-
-    html.push_str("</body>\n");
-    html.push_str("</html>\n");
+    // Generate interactive HTML with DuckDB WASM and AG Grid
+    let html = generate_interactive_html(
+        &timeline_svg,
+        &releases_chart_svg,
+        &libraries_chart_svg,
+        &symbols_chart_svg,
+    );
 
     // Write HTML file
     std::fs::write(&output_file, html)?;
 
+    println!("✨ Done!");
+    println!();
+    println!("Output file: {:?}", output_file);
+
     Ok(())
+}
+
+fn generate_interactive_html(
+    timeline_svg: &str,
+    releases_chart_svg: &str,
+    libraries_chart_svg: &str,
+    symbols_chart_svg: &str,
+) -> String {
+    format!(r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADBC Index</title>
+<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm" type="module"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/dist/ag-grid-community.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-grid.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-theme-alpine.min.css">
+<style>
+  body {{
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', 'Droid Sans Mono', 'Source Code Pro', 'Courier New', monospace;
+    margin: 20px;
+    background: #f5f5f5;
+  }}
+  h1 {{
+    color: #333;
+  }}
+  h2 {{
+    color: #555;
+    margin-top: 40px;
+    margin-bottom: 8px;
+  }}
+  .chart-container {{
+    background: white;
+    padding: 20px;
+    margin: 20px 0;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }}
+  .chart-container h3 {{
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #555;
+    font-size: 14px;
+    font-weight: 600;
+  }}
+  .table-container {{
+    background: white;
+    padding: 20px;
+    margin: 20px 0;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }}
+  .ag-theme-alpine {{
+    height: 600px;
+    margin-top: 10px;
+  }}
+  .filter-box {{
+    margin: 10px 0;
+    padding: 10px;
+    background: #f9f9f9;
+    border-radius: 4px;
+  }}
+  .filter-box input {{
+    padding: 8px 12px;
+    width: 300px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+  }}
+  .loading {{
+    text-align: center;
+    padding: 40px;
+    color: #666;
+    font-size: 16px;
+  }}
+  .loading.hidden {{
+    display: none;
+  }}
+  .loading-step {{
+    padding: 5px 0;
+    color: #999;
+  }}
+  .loading-step.active {{
+    color: #333;
+    font-weight: 500;
+  }}
+  .loading-step.success {{
+    color: #28a745;
+  }}
+  .loading-step.error {{
+    color: #dc3545;
+  }}
+  .status-indicator {{
+    font-size: 14px;
+    margin-left: 10px;
+  }}
+  .status-indicator.loading {{
+    color: #999;
+  }}
+  .status-indicator.success {{
+    color: #28a745;
+  }}
+  .status-indicator.error {{
+    color: #dc3545;
+  }}
+  .error-details {{
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    padding: 15px;
+    margin: 20px 0;
+  }}
+  .error-details h3 {{
+    color: #856404;
+    margin-top: 0;
+  }}
+  .error-details pre {{
+    background: #fff;
+    padding: 10px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 12px;
+  }}
+  .download-inline {{
+    font-size: 13px;
+    color: #666;
+    margin-bottom: 20px;
+  }}
+  .download-link {{
+    color: #0066cc;
+    text-decoration: none;
+    font-weight: 400;
+  }}
+  .download-link:hover {{
+    text-decoration: underline;
+  }}
+  .download-prefix {{
+    color: #666;
+    margin-right: 4px;
+  }}
+  .tabs {{
+    display: flex;
+    gap: 8px;
+    margin: 20px 0;
+    border-bottom: 2px solid #e0e0e0;
+    flex-wrap: wrap;
+  }}
+  .tab-button {{
+    padding: 12px 24px;
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: #666;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }}
+  .tab-button:hover {{
+    color: #333;
+    background: #f8f9fa;
+  }}
+  .tab-button.active {{
+    color: #0066cc;
+    border-bottom-color: #0066cc;
+  }}
+  .tab-content {{
+    display: none;
+  }}
+  .tab-content.active {{
+    display: block;
+  }}
+  .stats-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin: 20px 0;
+  }}
+  .stat-card {{
+    background: white;
+    padding: 24px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    text-align: center;
+  }}
+  .stat-value {{
+    font-size: 48px;
+    font-weight: 700;
+    color: #0066cc;
+    line-height: 1;
+    margin-bottom: 8px;
+  }}
+  .stat-label {{
+    font-size: 12px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+  }}
+  .charts-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+    gap: 20px;
+  }}
+</style>
+</head>
+<body>
+
+<h1>ADBC Index</h1>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-value" id="stat-drivers">-</div>
+    <div class="stat-label">Total Drivers</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="stat-releases">-</div>
+    <div class="stat-label">Total Releases</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="stat-libraries">-</div>
+    <div class="stat-label">Total Libraries</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="stat-symbols">-</div>
+    <div class="stat-label">Total Symbols</div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab-button active" data-tab="overview">
+    📈 Overview
+  </button>
+  <button class="tab-button" data-tab="drivers">
+    📊 Drivers <span class="status-indicator" id="driversStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="releases">
+    🚀 Releases <span class="status-indicator" id="releasesStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="libraries">
+    📚 Libraries <span class="status-indicator" id="librariesStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="symbols">
+    🔣 Symbols <span class="status-indicator" id="symbolsStatus"></span>
+  </button>
+</div>
+
+<div class="tab-content active" id="tab-overview">
+<h2>Overview</h2>
+
+<div class="charts-grid">
+  <div class="chart-container">
+    <h3>Drivers Released Over Time</h3>
+    {timeline_svg}
+  </div>
+  <div class="chart-container">
+    <h3>Releases per Driver</h3>
+    {releases_chart_svg}
+  </div>
+  <div class="chart-container">
+    <h3>Average Library Size by Driver</h3>
+    {libraries_chart_svg}
+  </div>
+  <div class="chart-container">
+    <h3>Unique Symbols per Driver</h3>
+    {symbols_chart_svg}
+  </div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-drivers">
+<h2>Drivers</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="drivers.parquet" class="download-link" download>drivers.parquet (<span id="size-drivers">...</span>)</a>
+</div>
+
+<div class="table-container">
+  <div class="filter-box">
+    <input type="text" id="driversFilter" placeholder="Filter drivers by name...">
+  </div>
+  <div id="driversGrid" class="ag-theme-alpine"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-releases">
+<h2>Releases</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="releases.parquet" class="download-link" download>releases.parquet (<span id="size-releases">...</span>)</a>
+</div>
+
+<div class="table-container">
+  <div class="filter-box">
+    <input type="text" id="releasesFilter" placeholder="Filter releases by name, version, OS, or arch...">
+  </div>
+  <div id="releasesGrid" class="ag-theme-alpine"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-libraries">
+<h2>Libraries</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="libraries.parquet" class="download-link" download>libraries.parquet (<span id="size-libraries">...</span>)</a>
+</div>
+
+<div class="table-container">
+  <div class="filter-box">
+    <input type="text" id="librariesFilter" placeholder="Filter libraries by name, OS, or library name...">
+  </div>
+  <div id="librariesGrid" class="ag-theme-alpine"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-symbols">
+<h2>Symbols</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="symbols.parquet" class="download-link" download>symbols.parquet (<span id="size-symbols">...</span>)</a>
+</div>
+
+<div class="table-container">
+  <div class="filter-box">
+    <input type="text" id="symbolsFilter" placeholder="Filter symbols by name or symbol...">
+  </div>
+  <div id="symbolsGrid" class="ag-theme-alpine"></div>
+</div>
+</div>
+
+<div class="loading" id="globalLoading">
+  <div id="loadingSteps"></div>
+</div>
+
+<script type="module">
+let db;
+let loadingSteps = {{}};
+
+function updateLoadingStep(id, status, message) {{
+  if (!loadingSteps[id]) {{
+    const stepDiv = document.createElement('div');
+    stepDiv.id = `step-${{id}}`;
+    stepDiv.className = 'loading-step';
+    document.getElementById('loadingSteps').appendChild(stepDiv);
+    loadingSteps[id] = stepDiv;
+  }}
+
+  const stepDiv = loadingSteps[id];
+  stepDiv.className = `loading-step ${{status}}`;
+
+  const icon = status === 'active' ? '⏳' : status === 'success' ? '✓' : status === 'error' ? '✗' : '';
+  stepDiv.textContent = `${{icon}} ${{message}}`;
+}}
+
+function setTableStatus(tableId, status, message) {{
+  const statusEl = document.getElementById(`${{tableId}}Status`);
+  if (statusEl) {{
+    statusEl.className = `status-indicator ${{status}}`;
+    const icon = status === 'loading' ? '⏳' : status === 'success' ? '✓' : status === 'error' ? '✗' : '';
+    statusEl.textContent = message ? `${{icon}} ${{message}}` : icon;
+  }}
+}}
+
+function showError(title, message, details) {{
+  const errorDiv = document.createElement('div');
+  errorDiv.className = 'error-details';
+  errorDiv.innerHTML = `
+    <h3>${{title}}</h3>
+    <p>${{message}}</p>
+    ${{details ? `<pre>${{details}}</pre>` : ''}}
+  `;
+  document.getElementById('globalLoading').insertAdjacentElement('afterend', errorDiv);
+}}
+
+async function initDuckDB() {{
+  updateLoadingStep('import', 'active', 'Loading DuckDB WASM module...');
+
+  let duckdb;
+  try {{
+    duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm');
+    updateLoadingStep('import', 'success', 'DuckDB WASM module loaded');
+  }} catch (err) {{
+    updateLoadingStep('import', 'error', 'Failed to load DuckDB WASM module');
+    throw new Error(`Failed to import DuckDB WASM: ${{err.message}}`);
+  }}
+
+  updateLoadingStep('init', 'active', 'Initializing DuckDB...');
+
+  try {{
+    const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+    const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+
+    const worker_url = URL.createObjectURL(
+      new Blob([`importScripts("${{bundle.mainWorker}}");`], {{type: "text/javascript"}})
+    );
+
+    const worker = new Worker(worker_url);
+    const logger = new duckdb.ConsoleLogger();
+    db = new duckdb.AsyncDuckDB(logger, worker);
+    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+    URL.revokeObjectURL(worker_url);
+
+    updateLoadingStep('init', 'success', 'DuckDB initialized');
+  }} catch (err) {{
+    updateLoadingStep('init', 'error', 'Failed to initialize DuckDB');
+    throw new Error(`Failed to initialize DuckDB: ${{err.message}}`);
+  }}
+
+  // Register parquet files in DuckDB's file system
+  const files = [
+    {{ name: 'drivers.parquet', id: 'drivers' }},
+    {{ name: 'releases.parquet', id: 'releases' }},
+    {{ name: 'libraries.parquet', id: 'libraries' }},
+    {{ name: 'symbols.parquet', id: 'symbols' }}
+  ];
+
+  for (const file of files) {{
+    updateLoadingStep(`fetch-${{file.name}}`, 'active', `Fetching ${{file.name}}...`);
+    try {{
+      const response = await fetch(file.name);
+      if (!response.ok) {{
+        throw new Error(`HTTP ${{response.status}}: ${{response.statusText}}`);
+      }}
+      const buffer = await response.arrayBuffer();
+      await db.registerFileBuffer(file.name, new Uint8Array(buffer));
+
+      const sizeKB = (buffer.byteLength / 1024).toFixed(1);
+      updateLoadingStep(`fetch-${{file.name}}`, 'success', `${{file.name}} loaded (${{sizeKB}} KB)`);
+
+      // Update download link with file size
+      const sizeEl = document.getElementById(`size-${{file.id}}`);
+      if (sizeEl) {{
+        sizeEl.textContent = `${{sizeKB}} KB`;
+      }}
+    }} catch (err) {{
+      updateLoadingStep(`fetch-${{file.name}}`, 'error', `Failed to load ${{file.name}}`);
+
+      // Update download link with error
+      const sizeEl = document.getElementById(`size-${{file.id}}`);
+      if (sizeEl) {{
+        sizeEl.textContent = 'Error loading';
+        sizeEl.style.color = '#dc3545';
+      }}
+
+      throw new Error(`Failed to fetch ${{file.name}}: ${{err.message}}`);
+    }}
+  }}
+}}
+
+function convertBigIntsToNumbers(obj) {{
+  const result = {{}};
+  for (const [key, value] of Object.entries(obj)) {{
+    if (typeof value === 'bigint') {{
+      // Convert BigInt to Number for JavaScript compatibility
+      result[key] = Number(value);
+    }} else {{
+      result[key] = value;
+    }}
+  }}
+  return result;
+}}
+
+async function queryDuckDB(sql, context) {{
+  let conn;
+  try {{
+    conn = await db.connect();
+    const result = await conn.query(sql);
+    const data = result.toArray().map(row => convertBigIntsToNumbers(Object.fromEntries(Object.entries(row))));
+    return data;
+  }} catch (err) {{
+    console.error(`Query failed [${{context}}]:`, err);
+    throw new Error(`Query failed: ${{err.message}}`);
+  }} finally {{
+    if (conn) {{
+      try {{
+        await conn.close();
+      }} catch (e) {{
+        console.warn('Failed to close connection:', e);
+      }}
+    }}
+  }}
+}}
+
+async function loadDriversTable() {{
+  setTableStatus('drivers', 'loading', 'Loading...');
+
+  try {{
+    const data = await queryDuckDB(`
+      SELECT
+        name,
+        repo_name,
+        release_count,
+        library_count,
+        strftime(timezone('UTC', first_release_date), '%Y-%m-%d %H:%M:%S UTC') as first_release_date,
+        first_release_version,
+        strftime(timezone('UTC', latest_release_date), '%Y-%m-%d %H:%M:%S UTC') as latest_release_date,
+        latest_release_version
+      FROM read_parquet('drivers.parquet')
+    `, 'drivers');
+
+    if (!data || data.length === 0) {{
+      setTableStatus('drivers', 'error', 'No data');
+      return;
+    }}
+
+    const columnDefs = [
+      {{ field: 'name', filter: true, sortable: true, width: 120 }},
+      {{ field: 'repo_name', filter: true, sortable: true, width: 150 }},
+      {{ field: 'release_count', filter: 'agNumberColumnFilter', sortable: true, width: 130 }},
+      {{ field: 'library_count', filter: 'agNumberColumnFilter', sortable: true, width: 130 }},
+      {{ field: 'first_release_date', filter: true, sortable: true, width: 200 }},
+      {{ field: 'first_release_version', filter: true, sortable: true, width: 170 }},
+      {{ field: 'latest_release_date', filter: true, sortable: true, width: 200 }},
+      {{ field: 'latest_release_version', filter: true, sortable: true, width: 170 }}
+    ];
+
+    const gridOptions = {{
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {{
+        resizable: true,
+        sortable: true,
+        filter: true
+      }},
+      pagination: true,
+      paginationPageSize: 20
+    }};
+
+    const grid = agGrid.createGrid(document.getElementById('driversGrid'), gridOptions);
+
+    document.getElementById('driversFilter').addEventListener('input', (e) => {{
+      grid.setGridOption('quickFilterText', e.target.value);
+    }});
+
+    setTableStatus('drivers', 'success', `${{data.length}} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-drivers');
+    if (statEl) {{
+      statEl.textContent = data.length;
+    }}
+  }} catch (err) {{
+    console.error('Failed to load drivers table:', err);
+    setTableStatus('drivers', 'error', err.message);
+    throw err;
+  }}
+}}
+
+async function loadReleasesTable() {{
+  setTableStatus('releases', 'loading', 'Loading...');
+
+  try {{
+    const data = await queryDuckDB(`
+      SELECT
+        name,
+        release_tag,
+        version,
+        strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date,
+        release_url,
+        os,
+        arch
+      FROM read_parquet('releases.parquet')
+      ORDER BY published_date DESC
+    `, 'releases');
+
+    if (!data || data.length === 0) {{
+      setTableStatus('releases', 'error', 'No data');
+      return;
+    }}
+
+    const columnDefs = [
+      {{ field: 'name', filter: true, sortable: true, width: 120 }},
+      {{ field: 'release_tag', filter: true, sortable: true, width: 120 }},
+      {{ field: 'version', filter: true, sortable: true, width: 100 }},
+      {{ field: 'published_date', filter: true, sortable: true, width: 200 }},
+      {{ field: 'release_url', filter: true, sortable: true, width: 300,
+         cellRenderer: (params) => {{
+           if (params.value) {{
+             return `<a href="${{params.value}}" target="_blank">${{params.value}}</a>`;
+           }}
+           return '';
+         }}
+      }},
+      {{ field: 'os', filter: true, sortable: true, width: 100 }},
+      {{ field: 'arch', filter: true, sortable: true, width: 100 }}
+    ];
+
+    const gridOptions = {{
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {{
+        resizable: true,
+        sortable: true,
+        filter: true
+      }},
+      pagination: true,
+      paginationPageSize: 50
+    }};
+
+    const grid = agGrid.createGrid(document.getElementById('releasesGrid'), gridOptions);
+
+    document.getElementById('releasesFilter').addEventListener('input', (e) => {{
+      grid.setGridOption('quickFilterText', e.target.value);
+    }});
+
+    setTableStatus('releases', 'success', `${{data.length}} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-releases');
+    if (statEl) {{
+      statEl.textContent = data.length;
+    }}
+  }} catch (err) {{
+    console.error('Failed to load releases table:', err);
+    setTableStatus('releases', 'error', err.message);
+    throw err;
+  }}
+}}
+
+async function loadLibrariesTable() {{
+  setTableStatus('libraries', 'loading', 'Loading...');
+
+  try {{
+    const data = await queryDuckDB(`
+      SELECT
+        name,
+        release_tag,
+        version,
+        strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date,
+        os,
+        arch,
+        library_name,
+        library_size_bytes,
+        library_sha256,
+        artifact_name,
+        artifact_url
+      FROM read_parquet('libraries.parquet')
+      ORDER BY published_date DESC
+    `, 'libraries');
+
+    if (!data || data.length === 0) {{
+      setTableStatus('libraries', 'error', 'No data');
+      return;
+    }}
+
+    const columnDefs = [
+      {{ field: 'name', filter: true, sortable: true, width: 120 }},
+      {{ field: 'release_tag', filter: true, sortable: true, width: 120 }},
+      {{ field: 'version', filter: true, sortable: true, width: 100 }},
+      {{ field: 'published_date', filter: true, sortable: true, width: 200 }},
+      {{ field: 'os', filter: true, sortable: true, width: 100 }},
+      {{ field: 'arch', filter: true, sortable: true, width: 100 }},
+      {{ field: 'library_name', filter: true, sortable: true, width: 200 }},
+      {{ field: 'library_size_bytes', filter: 'agNumberColumnFilter', sortable: true, width: 150,
+         valueFormatter: (params) => {{
+           if (params.value != null) {{
+             const bytes = typeof params.value === 'bigint' ? Number(params.value) : params.value;
+             return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+           }}
+           return '';
+         }}
+      }},
+      {{ field: 'library_sha256', filter: true, sortable: true, width: 200 }},
+      {{ field: 'artifact_name', filter: true, sortable: true, width: 250 }},
+      {{ field: 'artifact_url', filter: true, sortable: true, width: 300,
+         cellRenderer: (params) => {{
+           if (params.value) {{
+             return `<a href="${{params.value}}" target="_blank">${{params.value}}</a>`;
+           }}
+           return '';
+         }}
+      }}
+    ];
+
+    const gridOptions = {{
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {{
+        resizable: true,
+        sortable: true,
+        filter: true
+      }},
+      pagination: true,
+      paginationPageSize: 50
+    }};
+
+    const grid = agGrid.createGrid(document.getElementById('librariesGrid'), gridOptions);
+
+    document.getElementById('librariesFilter').addEventListener('input', (e) => {{
+      grid.setGridOption('quickFilterText', e.target.value);
+    }});
+
+    setTableStatus('libraries', 'success', `${{data.length}} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-libraries');
+    if (statEl) {{
+      statEl.textContent = data.length;
+    }}
+  }} catch (err) {{
+    console.error('Failed to load libraries table:', err);
+    setTableStatus('libraries', 'error', err.message);
+    throw err;
+  }}
+}}
+
+async function loadSymbolsTable() {{
+  setTableStatus('symbols', 'loading', 'Loading...');
+
+  try {{
+    const data = await queryDuckDB(`
+      SELECT *
+      FROM read_parquet('symbols.parquet')
+    `, 'symbols');
+
+    if (!data || data.length === 0) {{
+      setTableStatus('symbols', 'error', 'No data');
+      return;
+    }}
+
+    const columnDefs = [
+      {{ field: 'name', filter: true, sortable: true, width: 120 }},
+      {{ field: 'release_tag', filter: true, sortable: true, width: 120 }},
+      {{ field: 'version', filter: true, sortable: true, width: 100 }},
+      {{ field: 'os', filter: true, sortable: true, width: 100 }},
+      {{ field: 'arch', filter: true, sortable: true, width: 100 }},
+      {{ field: 'library_name', filter: true, sortable: true, width: 200 }},
+      {{ field: 'symbol', filter: true, sortable: true, width: 250 }},
+      {{ field: 'is_stub', filter: true, sortable: true, width: 100,
+         cellRenderer: (params) => {{
+           if (params.value === true) return '✓';
+           if (params.value === false) return '✗';
+           return 'N/A';
+         }}
+      }},
+      {{ field: 'constant_return', filter: 'agNumberColumnFilter', sortable: true, width: 140 }},
+      {{ field: 'return_status', filter: true, sortable: true, width: 200 }}
+    ];
+
+    const gridOptions = {{
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {{
+        resizable: true,
+        sortable: true,
+        filter: true
+      }},
+      pagination: true,
+      paginationPageSize: 100
+    }};
+
+    const grid = agGrid.createGrid(document.getElementById('symbolsGrid'), gridOptions);
+
+    document.getElementById('symbolsFilter').addEventListener('input', (e) => {{
+      grid.setGridOption('quickFilterText', e.target.value);
+    }});
+
+    setTableStatus('symbols', 'success', `${{data.length}} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-symbols');
+    if (statEl) {{
+      statEl.textContent = data.length;
+    }}
+  }} catch (err) {{
+    console.error('Failed to load symbols table:', err);
+    setTableStatus('symbols', 'error', err.message);
+    throw err;
+  }}
+}}
+
+async function init() {{
+  const globalLoadingEl = document.getElementById('globalLoading');
+
+  try {{
+    // Check if AG Grid is loaded
+    if (typeof agGrid === 'undefined') {{
+      throw new Error('AG Grid library failed to load. Check your internet connection or try refreshing the page.');
+    }}
+
+    // Initialize DuckDB
+    await initDuckDB();
+
+    // Load all tables
+    updateLoadingStep('tables', 'active', 'Loading tables...');
+
+    const results = await Promise.allSettled([
+      loadDriversTable(),
+      loadReleasesTable(),
+      loadLibrariesTable(),
+      loadSymbolsTable()
+    ]);
+
+    // Check for any failures
+    const failures = results.filter(r => r.status === 'rejected');
+    if (failures.length > 0) {{
+      updateLoadingStep('tables', 'error', `${{failures.length}} table(s) failed to load`);
+
+      // Show detailed error for first failure
+      const firstError = failures[0].reason;
+      showError(
+        'Failed to Load Tables',
+        `${{failures.length}} of 4 tables failed to load.`,
+        firstError.message
+      );
+    }} else {{
+      updateLoadingStep('tables', 'success', 'All tables loaded successfully');
+    }}
+
+    // Hide global loading indicator
+    globalLoadingEl.classList.add('hidden');
+
+  }} catch (err) {{
+    console.error('Critical error during initialization:', err);
+    updateLoadingStep('init-error', 'error', 'Initialization failed');
+
+    showError(
+      'Failed to Initialize Dashboard',
+      'The dashboard could not be loaded. Please check the console for details.',
+      err.message
+    );
+
+    // Keep loading indicator visible but update text
+    const stepsDiv = document.getElementById('loadingSteps');
+    stepsDiv.style.marginBottom = '20px';
+  }}
+}}
+
+// Tab switching functionality
+function switchTab(tabName) {{
+  // Hide all tab contents
+  document.querySelectorAll('.tab-content').forEach(content => {{
+    content.classList.remove('active');
+  }});
+
+  // Deactivate all tab buttons
+  document.querySelectorAll('.tab-button').forEach(button => {{
+    button.classList.remove('active');
+  }});
+
+  // Show selected tab content
+  const tabContent = document.getElementById(`tab-${{tabName}}`);
+  if (tabContent) {{
+    tabContent.classList.add('active');
+  }}
+
+  // Activate selected tab button
+  const tabButton = document.querySelector(`[data-tab="${{tabName}}"]`);
+  if (tabButton) {{
+    tabButton.classList.add('active');
+  }}
+}}
+
+// Setup tab click handlers
+document.addEventListener('DOMContentLoaded', () => {{
+  document.querySelectorAll('.tab-button').forEach(button => {{
+    button.addEventListener('click', () => {{
+      const tabName = button.getAttribute('data-tab');
+      switchTab(tabName);
+    }});
+  }});
+}});
+
+// Global error handler for unhandled errors
+window.addEventListener('error', (event) => {{
+  console.error('Unhandled error:', event.error);
+  showError(
+    'Unexpected Error',
+    'An unexpected error occurred while loading the dashboard.',
+    event.error ? event.error.message : event.message
+  );
+}});
+
+// Global handler for unhandled promise rejections
+window.addEventListener('unhandledrejection', (event) => {{
+  console.error('Unhandled promise rejection:', event.reason);
+  showError(
+    'Unexpected Error',
+    'An unexpected error occurred while loading the dashboard.',
+    event.reason ? event.reason.message : String(event.reason)
+  );
+}});
+
+// Start initialization
+init();</script>
+
+</body>
+</html>"#,
+    timeline_svg = timeline_svg,
+    releases_chart_svg = releases_chart_svg,
+    libraries_chart_svg = libraries_chart_svg,
+    symbols_chart_svg = symbols_chart_svg
+    )
 }
 
 fn csv_to_html_table(csv: &str) -> String {
