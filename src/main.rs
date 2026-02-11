@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use error::Result;
 use models::ReleaseRecord;
 use std::path::PathBuf;
+use tera::{Tera, Context};
 
 #[derive(Parser, Debug)]
 #[command(name = "adbc-index")]
@@ -74,7 +75,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
     }
 
     // Create GitHub client
-    let gh_client = github::GitHubClient::new(Some(github_token))?;
+    let gh_client = github::GitHubClient::new(Some(github_token.clone()))?;
 
     // Create PyPI client
     let pypi_client = pypi::PyPIClient::new()?;
@@ -156,8 +157,17 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                             cached_count += 1;
                             driver_cached += 1;
                         } else {
+                            // Use API URL instead of browser_download_url for tags with slashes
+                            // GitHub has a bug where browser_download_url doesn't work for tags with /
+                            // The API url works: needs Accept: application/octet-stream header
+                            let download_url = if tag.contains('/') {
+                                asset.url.clone()
+                            } else {
+                                asset.browser_download_url.clone()
+                            };
+
                             download_tasks.push(download::DownloadTask {
-                                url: asset.browser_download_url.clone(),
+                                url: download_url,
                                 driver_name: driver.name.clone(),
                                 release_tag: tag.clone(),
                                 artifact_name: asset.name.clone(),
@@ -171,6 +181,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                 driver_progress.finish_with_message(format!("{} new, {} cached", driver_new, driver_cached));
             }
             Err(e) => {
+                    eprintln!("  ⚠️  Download error: {}", e);
                 driver_progress.finish_with_message(format!("Error: {}", e));
                 driver_fetch_errors += 1;
             }
@@ -198,7 +209,8 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             download::DownloadManager::with_progress(
                 cache_dir.clone(),
                 concurrent_downloads,
-                download_progress.multi()
+                download_progress.multi(),
+                Some(github_token.clone())
             )?;
 
         let results = download_manager.download_all(download_tasks).await;
@@ -212,7 +224,8 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                     success_count += 1;
                     download_progress.inc(1);
                 }
-                Err(_) => {
+                Err(e) => {
+                    eprintln!("  ⚠️  Download error: {}", e);
                     error_count += 1;
                     download_progress.inc(1);
                 }
@@ -282,6 +295,7 @@ fn load_cached_releases(cache_dir: &PathBuf, driver_name: &str) -> Result<Vec<gi
         match serde_json::from_str::<github::types::Release>(&json_content) {
             Ok(release) => releases.push(release),
             Err(e) => {
+                    eprintln!("  ⚠️  Download error: {}", e);
                 eprintln!("⚠️  Failed to parse {}: {}", release_json_path.display(), e);
             }
         }
@@ -509,6 +523,7 @@ async fn report() -> Result<()> {
                 analyze_progress.inc(1);
             }
             Err(e) => {
+                    eprintln!("  ⚠️  Download error: {}", e);
                 analyze_progress.inc(1);
             }
         }
@@ -888,61 +903,76 @@ fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     let date_range = (max_date - min_date).num_seconds() as f64;
     let max_count = plot_points.last().unwrap().1;
 
-    // Generate SVG (Tufte-style: no background, simple title)
+    // Generate SVG with dark theme
     let mut svg = String::new();
-    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">", width, height));
+    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent;\">", width, height));
     svg.push_str("\n");
 
-    // Title (smaller, less bold)
+    // Axes
     svg.push_str(&format!(
-        "<text x=\"{}\" y=\"20\" font-size=\"14\" text-anchor=\"middle\">ADBC Drivers Released Over Time</text>",
-        width / 2.0
-    ));
-    svg.push_str("\n");
-
-    // Axes (Tufte-style: very light, thin)
-    svg.push_str(&format!(
-        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#999\" stroke-width=\"0.5\"/>",
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#1e3a5f\" stroke-width=\"1\"/>",
         margin_left, margin_top + plot_height, margin_left + plot_width, margin_top + plot_height
     ));
     svg.push_str("\n");
     svg.push_str(&format!(
-        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#999\" stroke-width=\"0.5\"/>",
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#1e3a5f\" stroke-width=\"1\"/>",
         margin_left, margin_top, margin_left, margin_top + plot_height
     ));
     svg.push_str("\n");
 
-    // No axis labels (Tufte-style: let the data speak)
-
-    // Y-axis ticks (Tufte-style: no grid, minimal ticks)
+    // Y-axis ticks and grid
     let y_tick_count = 5;
     for i in 0..=y_tick_count {
         let tick_value = (max_count as f64 / y_tick_count as f64 * i as f64).round() as i32;
         let y = margin_top + plot_height - (tick_value as f64 / max_count as f64 * plot_height);
 
-        // Tick label only (no grid lines)
+        // Grid line
+        if i > 0 && i < y_tick_count {
+            svg.push_str(&format!(
+                "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#1a2332\" stroke-width=\"0.5\" stroke-dasharray=\"2,2\"/>",
+                margin_left, y, margin_left + plot_width, y
+            ));
+            svg.push_str("\n");
+        }
+
+        // Tick label
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#666\" text-anchor=\"end\" alignment-baseline=\"middle\">{}</text>",
-            margin_left - 5.0, y, tick_value
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#90caf9\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
+            margin_left - 8.0, y, tick_value
         ));
         svg.push_str("\n");
     }
 
-    // X-axis ticks (Tufte-style: minimal, fewer ticks)
-    let x_tick_count = 4;
+    // X-axis ticks
+    let x_tick_count = 5;
     for i in 0..=x_tick_count {
         let date_offset = date_range * i as f64 / x_tick_count as f64;
         let tick_date = min_date + chrono::Duration::seconds(date_offset as i64);
         let x = margin_left + (plot_width * i as f64 / x_tick_count as f64);
 
-        // Tick label only (no tick marks)
-        let date_label = tick_date.format("%Y-%m-%d").to_string();
+        // Tick label
+        let date_label = tick_date.format("%Y-%m").to_string();
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#666\" text-anchor=\"end\" transform=\"rotate(-45, {}, {})\">{}</text>",
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" text-anchor=\"end\" transform=\"rotate(-45, {}, {})\" font-family=\"JetBrains Mono, monospace\">{}</text>",
             x, margin_top + plot_height + 10.0, x, margin_top + plot_height + 10.0, date_label
         ));
         svg.push_str("\n");
     }
+
+    // Plot area fill
+    let mut area_points = format!("{},{} ", margin_left, margin_top + plot_height);
+    for (date, count) in &plot_points {
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
+        area_points.push_str(&format!("{},{} ", x, y));
+    }
+    area_points.push_str(&format!("{},{}", margin_left + plot_width, margin_top + plot_height));
+
+    svg.push_str(&format!(
+        "<polygon points=\"{}\" fill=\"rgba(0, 212, 255, 0.1)\" stroke=\"none\"/>",
+        area_points.trim()
+    ));
+    svg.push_str("\n");
 
     // Plot line
     let mut polyline_points = String::new();
@@ -952,12 +982,22 @@ fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
         polyline_points.push_str(&format!("{},{} ", x, y));
     }
 
-    // Plot line (Tufte-style: black, no decoration)
     svg.push_str(&format!(
-        "<polyline points=\"{}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.5\"/>",
+        "<polyline points=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"2\"/>",
         polyline_points.trim()
     ));
     svg.push_str("\n");
+
+    // Plot points
+    for (date, count) in &plot_points {
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
+        svg.push_str(&format!(
+            "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"#00d4ff\"/>",
+            x, y
+        ));
+        svg.push_str("\n");
+    }
 
     svg.push_str("</svg>\n");
     svg
@@ -1007,16 +1047,9 @@ fn generate_bar_chart(csv: &str, title: &str) -> String {
     let divisor = if is_bytes { 1_048_576.0 } else { 1.0 };
     let scaled_max = max_value / divisor;
 
-    // Generate SVG
+    // Generate SVG with dark theme
     let mut svg = String::new();
-    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">", width, height));
-    svg.push_str("\n");
-
-    // Title
-    svg.push_str(&format!(
-        "<text x=\"{}\" y=\"20\" font-size=\"14\" text-anchor=\"middle\">{}</text>",
-        width / 2.0, title
-    ));
+    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent;\">", width, height));
     svg.push_str("\n");
 
     // Draw bars
@@ -1025,17 +1058,31 @@ fn generate_bar_chart(csv: &str, title: &str) -> String {
         let scaled_value = value / divisor;
         let bar_width = (scaled_value / scaled_max) * plot_width;
 
+        // Bar background
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#1a2332\" opacity=\"0.3\"/>",
+            margin_left, y, plot_width, bar_height
+        ));
+        svg.push_str("\n");
+
         // Bar
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"black\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#barGradient)\"/>",
+            margin_left, y, bar_width, bar_height
+        ));
+        svg.push_str("\n");
+
+        // Bar border
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"1\"/>",
             margin_left, y, bar_width, bar_height
         ));
         svg.push_str("\n");
 
         // Label (name)
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#333\" text-anchor=\"end\" alignment-baseline=\"middle\">{}</text>",
-            margin_left - 5.0, y + bar_height / 2.0, name
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>",
+            margin_left - 8.0, y + bar_height / 2.0, name
         ));
         svg.push_str("\n");
 
@@ -1046,11 +1093,19 @@ fn generate_bar_chart(csv: &str, title: &str) -> String {
             format!("{:.0}", scaled_value)
         };
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#666\" alignment-baseline=\"middle\">{}</text>",
-            margin_left + bar_width + 5.0, y + bar_height / 2.0, value_text
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
+            margin_left + bar_width + 8.0, y + bar_height / 2.0, value_text
         ));
         svg.push_str("\n");
     }
+
+    // Add gradient definition
+    svg.insert_str(svg.find("<rect").unwrap(), &format!(
+        "<defs><linearGradient id=\"barGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
+         <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:1\" />\
+         <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:1\" />\
+         </linearGradient></defs>"
+    ));
 
     svg.push_str("</svg>\n");
     svg
@@ -1140,13 +1195,54 @@ async fn html() -> Result<()> {
     let libraries_chart_svg = generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
     let symbols_chart_svg = generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
 
-    // Generate interactive HTML with DuckDB WASM and AG Grid
-    let html = generate_interactive_html(
-        &timeline_svg,
-        &releases_chart_svg,
-        &libraries_chart_svg,
-        &symbols_chart_svg,
-    );
+    // Get file sizes for download links
+    fn format_file_size(bytes: u64) -> String {
+        if bytes < 1024 {
+            format!("{} B", bytes)
+        } else if bytes < 1024 * 1024 {
+            format!("{:.1} KB", bytes as f64 / 1024.0)
+        } else {
+            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        }
+    }
+
+    let drivers_size = format_file_size(std::fs::metadata(&drivers_path)?.len());
+    let releases_size = format_file_size(std::fs::metadata(&releases_path)?.len());
+    let libraries_size = format_file_size(std::fs::metadata(&libraries_path)?.len());
+    let symbols_size = format_file_size(std::fs::metadata(&symbols_path)?.len());
+
+    // Initialize Tera template engine
+    let tera = match Tera::new("templates/**/*.tera") {
+        Ok(t) => t,
+        Err(e) => {
+                    eprintln!("  ⚠️  Download error: {}", e);
+            return Err(error::AdbcIndexError::Config(
+                format!("Template parsing error: {}", e)
+            ));
+        }
+    };
+
+    // Create template context
+    let mut context = Context::new();
+    context.insert("timeline_svg", &timeline_svg);
+    context.insert("releases_chart_svg", &releases_chart_svg);
+    context.insert("libraries_chart_svg", &libraries_chart_svg);
+    context.insert("symbols_chart_svg", &symbols_chart_svg);
+    context.insert("drivers_size", &drivers_size);
+    context.insert("releases_size", &releases_size);
+    context.insert("libraries_size", &libraries_size);
+    context.insert("symbols_size", &symbols_size);
+
+    // Render template
+    let html = match tera.render("index.html.tera", &context) {
+        Ok(html) => html,
+        Err(e) => {
+                    eprintln!("  ⚠️  Download error: {}", e);
+            return Err(error::AdbcIndexError::Config(
+                format!("Template rendering error: {}", e)
+            ));
+        }
+    };
 
     // Write HTML file
     std::fs::write(&output_file, html)?;
@@ -1163,247 +1259,540 @@ fn generate_interactive_html(
     releases_chart_svg: &str,
     libraries_chart_svg: &str,
     symbols_chart_svg: &str,
+    drivers_size: &str,
+    releases_size: &str,
+    libraries_size: &str,
+    symbols_size: &str,
 ) -> String {
     format!(r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ADBC Index</title>
+<title>ADBC Driver Index</title>
 <script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm" type="module"></script>
 <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/dist/ag-grid-community.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-grid.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-theme-alpine.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-theme-alpine-dark.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
+  :root {{
+    --bg-primary: #0a1929;
+    --bg-secondary: #0f2137;
+    --bg-tertiary: #162a42;
+    --accent-primary: #00d4ff;
+    --accent-secondary: #0099cc;
+    --text-primary: #e3f2fd;
+    --text-secondary: #90caf9;
+    --text-muted: #546e7a;
+    --border-color: #1e3a5f;
+    --border-bright: #00d4ff;
+    --success: #4caf50;
+    --warning: #ffa726;
+    --error: #ef5350;
+    --grid-pattern: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 19px,
+      var(--border-color) 19px,
+      var(--border-color) 20px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 19px,
+      var(--border-color) 19px,
+      var(--border-color) 20px
+    );
+  }}
+
+  * {{
+    box-sizing: border-box;
+  }}
+
   body {{
-    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', 'Droid Sans Mono', 'Source Code Pro', 'Courier New', monospace;
-    margin: 20px;
-    background: #f5f5f5;
-  }}
-  h1 {{
-    color: #333;
-  }}
-  h2 {{
-    color: #555;
-    margin-top: 40px;
-    margin-bottom: 8px;
-  }}
-  .chart-container {{
-    background: white;
-    padding: 20px;
-    margin: 20px 0;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  }}
-  .chart-container h3 {{
-    margin-top: 0;
-    margin-bottom: 15px;
-    color: #555;
-    font-size: 14px;
-    font-weight: 600;
-  }}
-  .table-container {{
-    background: white;
-    padding: 20px;
-    margin: 20px 0;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  }}
-  .ag-theme-alpine {{
-    height: 600px;
-    margin-top: 10px;
-  }}
-  .filter-box {{
-    margin: 10px 0;
-    padding: 10px;
-    background: #f9f9f9;
-    border-radius: 4px;
-  }}
-  .filter-box input {{
-    padding: 8px 12px;
-    width: 300px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-  }}
-  .loading {{
-    text-align: center;
-    padding: 40px;
-    color: #666;
-    font-size: 16px;
-  }}
-  .loading.hidden {{
-    display: none;
-  }}
-  .loading-step {{
-    padding: 5px 0;
-    color: #999;
-  }}
-  .loading-step.active {{
-    color: #333;
-    font-weight: 500;
-  }}
-  .loading-step.success {{
-    color: #28a745;
-  }}
-  .loading-step.error {{
-    color: #dc3545;
-  }}
-  .status-indicator {{
-    font-size: 14px;
-    margin-left: 10px;
-  }}
-  .status-indicator.loading {{
-    color: #999;
-  }}
-  .status-indicator.success {{
-    color: #28a745;
-  }}
-  .status-indicator.error {{
-    color: #dc3545;
-  }}
-  .error-details {{
-    background: #fff3cd;
-    border: 1px solid #ffc107;
-    border-radius: 4px;
-    padding: 15px;
-    margin: 20px 0;
-  }}
-  .error-details h3 {{
-    color: #856404;
-    margin-top: 0;
-  }}
-  .error-details pre {{
-    background: #fff;
-    padding: 10px;
-    border-radius: 4px;
-    overflow-x: auto;
-    font-size: 12px;
-  }}
-  .download-inline {{
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', 'Monaco', monospace;
+    margin: 0;
+    padding: 0;
+    background: var(--bg-primary);
+    color: var(--text-primary);
     font-size: 13px;
-    color: #666;
-    margin-bottom: 20px;
+    line-height: 1.6;
+    background-image: var(--grid-pattern);
+    background-size: 20px 20px;
   }}
-  .download-link {{
-    color: #0066cc;
-    text-decoration: none;
-    font-weight: 400;
+
+  .container {{
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 0 24px;
   }}
-  .download-link:hover {{
-    text-decoration: underline;
+
+  header {{
+    background: var(--bg-secondary);
+    border-bottom: 2px solid var(--border-bright);
+    padding: 32px 0;
+    margin-bottom: 40px;
+    box-shadow: 0 4px 20px rgba(0, 212, 255, 0.1);
+    position: relative;
   }}
-  .download-prefix {{
-    color: #666;
-    margin-right: 4px;
+
+  .github-link {{
+    position: absolute;
+    top: 32px;
+    right: 24px;
+    width: 32px;
+    height: 32px;
+    transition: all 0.3s ease;
+    opacity: 0.8;
   }}
+
+  .github-link:hover {{
+    opacity: 1;
+    transform: scale(1.1);
+  }}
+
+  .github-link svg {{
+    width: 100%;
+    height: 100%;
+    fill: var(--accent-primary);
+    filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.3));
+  }}
+
+  .github-link:hover svg {{
+    filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.6));
+  }}
+
+  h1 {{
+    margin: 0;
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    text-transform: uppercase;
+    color: var(--accent-primary);
+    text-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+  }}
+
+  .subtitle {{
+    margin: 8px 0 0 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 300;
+  }}
+
+  h2 {{
+    color: var(--accent-primary);
+    font-size: 18px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 0 0 24px 0;
+    font-weight: 500;
+    border-left: 3px solid var(--accent-primary);
+    padding-left: 12px;
+  }}
+
+  .stats-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin-bottom: 48px;
+  }}
+
+  .stat-card {{
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s ease;
+  }}
+
+  .stat-card::before {{
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent-primary), transparent);
+  }}
+
+  .stat-card:hover {{
+    border-color: var(--accent-primary);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0, 212, 255, 0.2);
+  }}
+
+  .stat-label {{
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+    margin-bottom: 12px;
+  }}
+
+  .stat-value {{
+    font-size: 56px;
+    font-weight: 700;
+    color: var(--accent-primary);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }}
+
   .tabs {{
     display: flex;
-    gap: 8px;
-    margin: 20px 0;
-    border-bottom: 2px solid #e0e0e0;
+    gap: 0;
+    margin: 48px 0 32px;
+    border-bottom: 1px solid var(--border-color);
     flex-wrap: wrap;
   }}
+
   .tab-button {{
-    padding: 12px 24px;
-    background: none;
+    padding: 16px 24px;
+    background: rgba(0, 212, 255, 0.03);
     border: none;
-    border-bottom: 3px solid transparent;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 11px;
     font-weight: 500;
-    color: #666;
+    color: var(--text-secondary);
     transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    position: relative;
+    font-family: 'JetBrains Mono', monospace;
   }}
+
+  .tab-button::after {{
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--accent-primary);
+    transform: scaleX(0);
+    transition: transform 0.3s ease;
+  }}
+
   .tab-button:hover {{
-    color: #333;
-    background: #f8f9fa;
+    color: var(--text-primary);
+    background: rgba(0, 212, 255, 0.08);
   }}
+
   .tab-button.active {{
-    color: #0066cc;
-    border-bottom-color: #0066cc;
+    color: var(--accent-primary);
+    background: rgba(0, 212, 255, 0.06);
   }}
+
+  .tab-button.active::after {{
+    transform: scaleX(1);
+  }}
+
+  .status-indicator {{
+    font-size: 11px;
+    margin-left: 8px;
+    font-weight: 400;
+  }}
+
+  .status-indicator.loading {{ color: var(--text-muted); }}
+  .status-indicator.success {{ color: var(--success); }}
+  .status-indicator.error {{ color: var(--error); }}
+
   .tab-content {{
     display: none;
+    animation: fadeIn 0.3s ease;
   }}
+
   .tab-content.active {{
     display: block;
   }}
-  .stats-grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 20px;
-    margin: 20px 0;
+
+  @keyframes fadeIn {{
+    from {{ opacity: 0; transform: translateY(8px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
   }}
-  .stat-card {{
-    background: white;
-    padding: 24px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    text-align: center;
-  }}
-  .stat-value {{
-    font-size: 48px;
-    font-weight: 700;
-    color: #0066cc;
-    line-height: 1;
-    margin-bottom: 8px;
-  }}
-  .stat-label {{
-    font-size: 12px;
-    color: #666;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-weight: 500;
-  }}
+
   .charts-grid {{
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+    gap: 24px;
+    margin-bottom: 48px;
+  }}
+
+  .chart-container {{
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+  }}
+
+  .chart-container::before {{
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+  }}
+
+  .chart-container h3 {{
+    margin: 0 0 20px 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+  }}
+
+  .chart-container svg {{
+    filter: brightness(1.1);
+  }}
+
+  .table-container {{
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    padding: 24px;
+    margin-bottom: 48px;
+  }}
+
+  .sql-query-box {{
+    margin-bottom: 16px;
+    padding: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+  }}
+
+  .sql-query-label {{
+    display: block;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }}
+
+  .sql-query-box textarea {{
+    width: 100%;
+    min-height: 80px;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    transition: all 0.2s ease;
+    resize: vertical;
+  }}
+
+  .sql-query-box textarea:focus {{
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
+  }}
+
+  .sql-query-box textarea::placeholder {{
+    color: var(--text-muted);
+  }}
+
+  .sql-query-buttons {{
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+  }}
+
+  .sql-query-button {{
+    padding: 8px 16px;
+    background: var(--accent-primary);
+    border: none;
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: 'JetBrains Mono', monospace;
+  }}
+
+  .sql-query-button:hover {{
+    background: var(--accent-secondary);
+    box-shadow: 0 0 8px rgba(0, 212, 255, 0.4);
+  }}
+
+  .sql-query-button:active {{
+    transform: translateY(1px);
+  }}
+
+  .ag-theme-alpine-dark {{
+    --ag-background-color: var(--bg-tertiary);
+    --ag-foreground-color: var(--text-primary);
+    --ag-border-color: var(--border-color);
+    --ag-header-background-color: var(--bg-secondary);
+    --ag-odd-row-background-color: rgba(0, 212, 255, 0.02);
+    --ag-row-hover-color: rgba(0, 212, 255, 0.08);
+    --ag-selected-row-background-color: rgba(0, 212, 255, 0.15);
+    height: 600px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }}
+
+  .download-inline {{
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: var(--bg-tertiary);
+    border-left: 2px solid var(--accent-primary);
+  }}
+
+  .download-prefix {{
+    color: var(--text-muted);
+    margin-right: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 10px;
+  }}
+
+  .download-link {{
+    color: var(--accent-primary);
+    text-decoration: none;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }}
+
+  .download-link:hover {{
+    color: var(--accent-secondary);
+    text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);
+  }}
+
+  .loading {{
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-secondary);
+    font-size: 14px;
+  }}
+
+  .loading.hidden {{
+    display: none;
+  }}
+
+  .loading-step {{
+    padding: 8px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }}
+
+  .loading-step.active {{
+    color: var(--accent-primary);
+    font-weight: 500;
+  }}
+
+  .loading-step.success {{ color: var(--success); }}
+  .loading-step.error {{ color: var(--error); }}
+
+  .error-details {{
+    background: rgba(239, 83, 80, 0.1);
+    border: 1px solid var(--error);
+    padding: 20px;
+    margin: 24px 0;
+  }}
+
+  .error-details h3 {{
+    color: var(--error);
+    margin-top: 0;
+    font-size: 14px;
+    text-transform: uppercase;
+  }}
+
+  .error-details pre {{
+    background: var(--bg-primary);
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 11px;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+  }}
+
+  footer {{
+    margin-top: 80px;
+    padding: 32px 0;
+    border-top: 1px solid var(--border-color);
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 11px;
+  }}
+
+  @media (max-width: 768px) {{
+    .stats-grid {{
+      grid-template-columns: repeat(2, 1fr);
+    }}
+    .charts-grid {{
+      grid-template-columns: 1fr;
+    }}
+    .stat-value {{
+      font-size: 40px;
+    }}
   }}
 </style>
 </head>
 <body>
 
-<h1>ADBC Index</h1>
+<header>
+  <div class="container">
+    <h1>ADBC Driver Index</h1>
+    <div class="subtitle">Arrow Database Connectivity · Binary Analysis</div>
+  </div>
+  <a href="https://github.com/amoeba/adbc-dindex" target="_blank" rel="noopener noreferrer" class="github-link" aria-label="View on GitHub">
+    <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+  </a>
+</header>
+
+<div class="container">
 
 <div class="stats-grid">
   <div class="stat-card">
-    <div class="stat-value" id="stat-drivers">-</div>
     <div class="stat-label">Total Drivers</div>
+    <div class="stat-value" id="stat-drivers">—</div>
   </div>
   <div class="stat-card">
-    <div class="stat-value" id="stat-releases">-</div>
     <div class="stat-label">Total Releases</div>
+    <div class="stat-value" id="stat-releases">—</div>
   </div>
   <div class="stat-card">
-    <div class="stat-value" id="stat-libraries">-</div>
     <div class="stat-label">Total Libraries</div>
+    <div class="stat-value" id="stat-libraries">—</div>
   </div>
   <div class="stat-card">
-    <div class="stat-value" id="stat-symbols">-</div>
     <div class="stat-label">Total Symbols</div>
+    <div class="stat-value" id="stat-symbols">—</div>
   </div>
 </div>
 
 <div class="tabs">
   <button class="tab-button active" data-tab="overview">
-    📈 Overview
+    Overview<span class="status-indicator" id="overviewStatus"></span>
   </button>
   <button class="tab-button" data-tab="drivers">
-    📊 Drivers <span class="status-indicator" id="driversStatus"></span>
+    Drivers<span class="status-indicator" id="driversStatus"></span>
   </button>
   <button class="tab-button" data-tab="releases">
-    🚀 Releases <span class="status-indicator" id="releasesStatus"></span>
+    Releases<span class="status-indicator" id="releasesStatus"></span>
   </button>
   <button class="tab-button" data-tab="libraries">
-    📚 Libraries <span class="status-indicator" id="librariesStatus"></span>
+    Libraries<span class="status-indicator" id="librariesStatus"></span>
   </button>
   <button class="tab-button" data-tab="symbols">
-    🔣 Symbols <span class="status-indicator" id="symbolsStatus"></span>
+    Symbols<span class="status-indicator" id="symbolsStatus"></span>
   </button>
 </div>
 
@@ -1434,14 +1823,18 @@ fn generate_interactive_html(
 <h2>Drivers</h2>
 <div class="download-inline">
   <span class="download-prefix">Download</span>
-  <a href="drivers.parquet" class="download-link" download>drivers.parquet (<span id="size-drivers">...</span>)</a>
+  <a href="drivers.parquet" class="download-link" download>drivers.parquet ({drivers_size})</a>
 </div>
 
 <div class="table-container">
-  <div class="filter-box">
-    <input type="text" id="driversFilter" placeholder="Filter drivers by name...">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="driversQuery" placeholder="SELECT * FROM read_parquet('drivers.parquet')">SELECT * FROM read_parquet('drivers.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runDriversQuery()">Run Query ⏎</button>
+    </div>
   </div>
-  <div id="driversGrid" class="ag-theme-alpine"></div>
+  <div id="driversGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
 
@@ -1449,14 +1842,18 @@ fn generate_interactive_html(
 <h2>Releases</h2>
 <div class="download-inline">
   <span class="download-prefix">Download</span>
-  <a href="releases.parquet" class="download-link" download>releases.parquet (<span id="size-releases">...</span>)</a>
+  <a href="releases.parquet" class="download-link" download>releases.parquet ({releases_size})</a>
 </div>
 
 <div class="table-container">
-  <div class="filter-box">
-    <input type="text" id="releasesFilter" placeholder="Filter releases by name, version, OS, or arch...">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="releasesQuery" placeholder="SELECT * FROM read_parquet('releases.parquet')">SELECT * FROM read_parquet('releases.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runReleasesQuery()">Run Query ⏎</button>
+    </div>
   </div>
-  <div id="releasesGrid" class="ag-theme-alpine"></div>
+  <div id="releasesGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
 
@@ -1464,14 +1861,18 @@ fn generate_interactive_html(
 <h2>Libraries</h2>
 <div class="download-inline">
   <span class="download-prefix">Download</span>
-  <a href="libraries.parquet" class="download-link" download>libraries.parquet (<span id="size-libraries">...</span>)</a>
+  <a href="libraries.parquet" class="download-link" download>libraries.parquet ({libraries_size})</a>
 </div>
 
 <div class="table-container">
-  <div class="filter-box">
-    <input type="text" id="librariesFilter" placeholder="Filter libraries by name, OS, or library name...">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="librariesQuery" placeholder="SELECT * FROM read_parquet('libraries.parquet')">SELECT * FROM read_parquet('libraries.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runLibrariesQuery()">Run Query ⏎</button>
+    </div>
   </div>
-  <div id="librariesGrid" class="ag-theme-alpine"></div>
+  <div id="librariesGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
 
@@ -1479,20 +1880,32 @@ fn generate_interactive_html(
 <h2>Symbols</h2>
 <div class="download-inline">
   <span class="download-prefix">Download</span>
-  <a href="symbols.parquet" class="download-link" download>symbols.parquet (<span id="size-symbols">...</span>)</a>
+  <a href="symbols.parquet" class="download-link" download>symbols.parquet ({symbols_size})</a>
 </div>
 
 <div class="table-container">
-  <div class="filter-box">
-    <input type="text" id="symbolsFilter" placeholder="Filter symbols by name or symbol...">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="symbolsQuery" placeholder="SELECT * FROM read_parquet('symbols.parquet')">SELECT * FROM read_parquet('symbols.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runSymbolsQuery()">Run Query ⏎</button>
+    </div>
   </div>
-  <div id="symbolsGrid" class="ag-theme-alpine"></div>
+  <div id="symbolsGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
 
 <div class="loading" id="globalLoading">
   <div id="loadingSteps"></div>
 </div>
+
+</div>
+
+<footer>
+  <div class="container">
+    Generated by ADBC Index · Data stored in Parquet format · Powered by DuckDB WASM
+  </div>
+</footer>
 
 <script type="module">
 let db;
@@ -1643,38 +2056,35 @@ async function queryDuckDB(sql, context) {{
   }}
 }}
 
-async function loadDriversTable() {{
+let driversGrid = null;
+
+async function loadDriversTable(customSQL) {{
+  console.log('loadDriversTable called with customSQL:', customSQL);
   setTableStatus('drivers', 'loading', 'Loading...');
 
   try {{
-    const data = await queryDuckDB(`
-      SELECT
-        name,
-        repo_name,
-        release_count,
-        library_count,
-        strftime(timezone('UTC', first_release_date), '%Y-%m-%d %H:%M:%S UTC') as first_release_date,
-        first_release_version,
-        strftime(timezone('UTC', latest_release_date), '%Y-%m-%d %H:%M:%S UTC') as latest_release_date,
-        latest_release_version
-      FROM read_parquet('drivers.parquet')
-    `, 'drivers');
+    const sql = customSQL || document.getElementById('driversQuery').value;
+    console.log('Executing SQL:', sql);
+    const data = await queryDuckDB(sql, 'drivers');
+    console.log('Query returned', data?.length, 'rows');
 
     if (!data || data.length === 0) {{
       setTableStatus('drivers', 'error', 'No data');
+      if (driversGrid) {{
+        driversGrid.destroy();
+        driversGrid = null;
+      }}
       return;
     }}
 
-    const columnDefs = [
-      {{ field: 'name', filter: true, sortable: true, width: 120 }},
-      {{ field: 'repo_name', filter: true, sortable: true, width: 150 }},
-      {{ field: 'release_count', filter: 'agNumberColumnFilter', sortable: true, width: 130 }},
-      {{ field: 'library_count', filter: 'agNumberColumnFilter', sortable: true, width: 130 }},
-      {{ field: 'first_release_date', filter: true, sortable: true, width: 200 }},
-      {{ field: 'first_release_version', filter: true, sortable: true, width: 170 }},
-      {{ field: 'latest_release_date', filter: true, sortable: true, width: 200 }},
-      {{ field: 'latest_release_version', filter: true, sortable: true, width: 170 }}
-    ];
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({{
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150
+    }}));
 
     const gridOptions = {{
       columnDefs: columnDefs,
@@ -1688,11 +2098,12 @@ async function loadDriversTable() {{
       paginationPageSize: 20
     }};
 
-    const grid = agGrid.createGrid(document.getElementById('driversGrid'), gridOptions);
+    // Destroy existing grid before creating new one
+    if (driversGrid) {{
+      driversGrid.destroy();
+    }}
 
-    document.getElementById('driversFilter').addEventListener('input', (e) => {{
-      grid.setGridOption('quickFilterText', e.target.value);
-    }});
+    driversGrid = agGrid.createGrid(document.getElementById('driversGrid'), gridOptions);
 
     setTableStatus('drivers', 'success', `${{data.length}} rows`);
 
@@ -1704,48 +2115,62 @@ async function loadDriversTable() {{
   }} catch (err) {{
     console.error('Failed to load drivers table:', err);
     setTableStatus('drivers', 'error', err.message);
-    throw err;
+    if (driversGrid) {{
+      driversGrid.destroy();
+      driversGrid = null;
+    }}
   }}
 }}
 
-async function loadReleasesTable() {{
+async function runDriversQuery() {{
+  console.log('Running drivers query...');
+  const queryText = document.getElementById('driversQuery').value;
+  console.log('Query:', queryText);
+  try {{
+    await loadDriversTable();
+  }} catch (err) {{
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }}
+}}
+
+let releasesGrid = null;
+
+async function loadReleasesTable(customSQL) {{
   setTableStatus('releases', 'loading', 'Loading...');
 
   try {{
-    const data = await queryDuckDB(`
-      SELECT
-        name,
-        release_tag,
-        version,
-        strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date,
-        release_url,
-        os,
-        arch
-      FROM read_parquet('releases.parquet')
-      ORDER BY published_date DESC
-    `, 'releases');
+    const sql = customSQL || document.getElementById('releasesQuery').value;
+    const data = await queryDuckDB(sql, 'releases');
 
     if (!data || data.length === 0) {{
       setTableStatus('releases', 'error', 'No data');
+      if (releasesGrid) {{
+        releasesGrid.destroy();
+        releasesGrid = null;
+      }}
       return;
     }}
 
-    const columnDefs = [
-      {{ field: 'name', filter: true, sortable: true, width: 120 }},
-      {{ field: 'release_tag', filter: true, sortable: true, width: 120 }},
-      {{ field: 'version', filter: true, sortable: true, width: 100 }},
-      {{ field: 'published_date', filter: true, sortable: true, width: 200 }},
-      {{ field: 'release_url', filter: true, sortable: true, width: 300,
-         cellRenderer: (params) => {{
-           if (params.value) {{
-             return `<a href="${{params.value}}" target="_blank">${{params.value}}</a>`;
-           }}
-           return '';
-         }}
-      }},
-      {{ field: 'os', filter: true, sortable: true, width: 100 }},
-      {{ field: 'arch', filter: true, sortable: true, width: 100 }}
-    ];
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({{
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150,
+      cellRenderer: (params) => {{
+        // Auto-link URL fields
+        if (key.includes('url') && params.value && typeof params.value === 'string' && params.value.startsWith('http')) {{
+          return `<a href="${{params.value}}" target="_blank">${{params.value}}</a>`;
+        }}
+        // Format array fields
+        if (Array.isArray(params.value)) {{
+          return params.value.join(', ');
+        }}
+        return params.value;
+      }}
+    }}));
 
     const gridOptions = {{
       columnDefs: columnDefs,
@@ -1759,11 +2184,12 @@ async function loadReleasesTable() {{
       paginationPageSize: 50
     }};
 
-    const grid = agGrid.createGrid(document.getElementById('releasesGrid'), gridOptions);
+    // Destroy existing grid before creating new one
+    if (releasesGrid) {{
+      releasesGrid.destroy();
+    }}
 
-    document.getElementById('releasesFilter').addEventListener('input', (e) => {{
-      grid.setGridOption('quickFilterText', e.target.value);
-    }});
+    releasesGrid = agGrid.createGrid(document.getElementById('releasesGrid'), gridOptions);
 
     setTableStatus('releases', 'success', `${{data.length}} rows`);
 
@@ -1775,64 +2201,58 @@ async function loadReleasesTable() {{
   }} catch (err) {{
     console.error('Failed to load releases table:', err);
     setTableStatus('releases', 'error', err.message);
-    throw err;
+    if (releasesGrid) {{
+      releasesGrid.destroy();
+      releasesGrid = null;
+    }}
   }}
 }}
 
-async function loadLibrariesTable() {{
+async function runReleasesQuery() {{
+  console.log('Running releases query...');
+  const queryText = document.getElementById('releasesQuery').value;
+  console.log('Query:', queryText);
+  try {{
+    await loadReleasesTable();
+  }} catch (err) {{
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }}
+}}
+
+let librariesGrid = null;
+
+async function loadLibrariesTable(customSQL) {{
   setTableStatus('libraries', 'loading', 'Loading...');
 
   try {{
-    const data = await queryDuckDB(`
-      SELECT
-        name,
-        release_tag,
-        version,
-        strftime(timezone('UTC', published_date), '%Y-%m-%d %H:%M:%S UTC') as published_date,
-        os,
-        arch,
-        library_name,
-        library_size_bytes,
-        library_sha256,
-        artifact_name,
-        artifact_url
-      FROM read_parquet('libraries.parquet')
-      ORDER BY published_date DESC
-    `, 'libraries');
+    const sql = customSQL || document.getElementById('librariesQuery').value;
+    const data = await queryDuckDB(sql, 'libraries');
 
     if (!data || data.length === 0) {{
       setTableStatus('libraries', 'error', 'No data');
+      if (librariesGrid) {{
+        librariesGrid.destroy();
+        librariesGrid = null;
+      }}
       return;
     }}
 
-    const columnDefs = [
-      {{ field: 'name', filter: true, sortable: true, width: 120 }},
-      {{ field: 'release_tag', filter: true, sortable: true, width: 120 }},
-      {{ field: 'version', filter: true, sortable: true, width: 100 }},
-      {{ field: 'published_date', filter: true, sortable: true, width: 200 }},
-      {{ field: 'os', filter: true, sortable: true, width: 100 }},
-      {{ field: 'arch', filter: true, sortable: true, width: 100 }},
-      {{ field: 'library_name', filter: true, sortable: true, width: 200 }},
-      {{ field: 'library_size_bytes', filter: 'agNumberColumnFilter', sortable: true, width: 150,
-         valueFormatter: (params) => {{
-           if (params.value != null) {{
-             const bytes = typeof params.value === 'bigint' ? Number(params.value) : params.value;
-             return (bytes / 1024 / 1024).toFixed(2) + ' MB';
-           }}
-           return '';
-         }}
-      }},
-      {{ field: 'library_sha256', filter: true, sortable: true, width: 200 }},
-      {{ field: 'artifact_name', filter: true, sortable: true, width: 250 }},
-      {{ field: 'artifact_url', filter: true, sortable: true, width: 300,
-         cellRenderer: (params) => {{
-           if (params.value) {{
-             return `<a href="${{params.value}}" target="_blank">${{params.value}}</a>`;
-           }}
-           return '';
-         }}
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({{
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150,
+      cellRenderer: (params) => {{
+        // Auto-link URL fields
+        if (key.includes('url') && params.value && typeof params.value === 'string' && params.value.startsWith('http')) {{
+          return `<a href="${{params.value}}" target="_blank">${{params.value}}</a>`;
+        }}
+        return params.value;
       }}
-    ];
+    }}));
 
     const gridOptions = {{
       columnDefs: columnDefs,
@@ -1846,11 +2266,12 @@ async function loadLibrariesTable() {{
       paginationPageSize: 50
     }};
 
-    const grid = agGrid.createGrid(document.getElementById('librariesGrid'), gridOptions);
+    // Destroy existing grid before creating new one
+    if (librariesGrid) {{
+      librariesGrid.destroy();
+    }}
 
-    document.getElementById('librariesFilter').addEventListener('input', (e) => {{
-      grid.setGridOption('quickFilterText', e.target.value);
-    }});
+    librariesGrid = agGrid.createGrid(document.getElementById('librariesGrid'), gridOptions);
 
     setTableStatus('libraries', 'success', `${{data.length}} rows`);
 
@@ -1862,42 +2283,58 @@ async function loadLibrariesTable() {{
   }} catch (err) {{
     console.error('Failed to load libraries table:', err);
     setTableStatus('libraries', 'error', err.message);
-    throw err;
+    if (librariesGrid) {{
+      librariesGrid.destroy();
+      librariesGrid = null;
+    }}
   }}
 }}
 
-async function loadSymbolsTable() {{
+async function runLibrariesQuery() {{
+  console.log('Running libraries query...');
+  const queryText = document.getElementById('librariesQuery').value;
+  console.log('Query:', queryText);
+  try {{
+    await loadLibrariesTable();
+  }} catch (err) {{
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }}
+}}
+
+let symbolsGrid = null;
+
+async function loadSymbolsTable(customSQL) {{
   setTableStatus('symbols', 'loading', 'Loading...');
 
   try {{
-    const data = await queryDuckDB(`
-      SELECT *
-      FROM read_parquet('symbols.parquet')
-    `, 'symbols');
+    const sql = customSQL || document.getElementById('symbolsQuery').value;
+    const data = await queryDuckDB(sql, 'symbols');
 
     if (!data || data.length === 0) {{
       setTableStatus('symbols', 'error', 'No data');
+      if (symbolsGrid) {{
+        symbolsGrid.destroy();
+        symbolsGrid = null;
+      }}
       return;
     }}
 
-    const columnDefs = [
-      {{ field: 'name', filter: true, sortable: true, width: 120 }},
-      {{ field: 'release_tag', filter: true, sortable: true, width: 120 }},
-      {{ field: 'version', filter: true, sortable: true, width: 100 }},
-      {{ field: 'os', filter: true, sortable: true, width: 100 }},
-      {{ field: 'arch', filter: true, sortable: true, width: 100 }},
-      {{ field: 'library_name', filter: true, sortable: true, width: 200 }},
-      {{ field: 'symbol', filter: true, sortable: true, width: 250 }},
-      {{ field: 'is_stub', filter: true, sortable: true, width: 100,
-         cellRenderer: (params) => {{
-           if (params.value === true) return '✓';
-           if (params.value === false) return '✗';
-           return 'N/A';
-         }}
-      }},
-      {{ field: 'constant_return', filter: 'agNumberColumnFilter', sortable: true, width: 140 }},
-      {{ field: 'return_status', filter: true, sortable: true, width: 200 }}
-    ];
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({{
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150,
+      cellRenderer: (params) => {{
+        // Special rendering for boolean is_stub field
+        if (key === 'is_stub' && typeof params.value === 'boolean') {{
+          return params.value ? '✓' : '✗';
+        }}
+        return params.value;
+      }}
+    }}));
 
     const gridOptions = {{
       columnDefs: columnDefs,
@@ -1911,11 +2348,12 @@ async function loadSymbolsTable() {{
       paginationPageSize: 100
     }};
 
-    const grid = agGrid.createGrid(document.getElementById('symbolsGrid'), gridOptions);
+    // Destroy existing grid before creating new one
+    if (symbolsGrid) {{
+      symbolsGrid.destroy();
+    }}
 
-    document.getElementById('symbolsFilter').addEventListener('input', (e) => {{
-      grid.setGridOption('quickFilterText', e.target.value);
-    }});
+    symbolsGrid = agGrid.createGrid(document.getElementById('symbolsGrid'), gridOptions);
 
     setTableStatus('symbols', 'success', `${{data.length}} rows`);
 
@@ -1927,9 +2365,30 @@ async function loadSymbolsTable() {{
   }} catch (err) {{
     console.error('Failed to load symbols table:', err);
     setTableStatus('symbols', 'error', err.message);
-    throw err;
+    if (symbolsGrid) {{
+      symbolsGrid.destroy();
+      symbolsGrid = null;
+    }}
   }}
 }}
+
+async function runSymbolsQuery() {{
+  console.log('Running symbols query...');
+  const queryText = document.getElementById('symbolsQuery').value;
+  console.log('Query:', queryText);
+  try {{
+    await loadSymbolsTable();
+  }} catch (err) {{
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }}
+}}
+
+// Expose query functions to global scope for inline onclick handlers
+window.runDriversQuery = runDriversQuery;
+window.runReleasesQuery = runReleasesQuery;
+window.runLibrariesQuery = runLibrariesQuery;
+window.runSymbolsQuery = runSymbolsQuery;
 
 async function init() {{
   const globalLoadingEl = document.getElementById('globalLoading');
@@ -1971,6 +2430,35 @@ async function init() {{
 
     // Hide global loading indicator
     globalLoadingEl.classList.add('hidden');
+
+    // Add keyboard shortcuts for query execution (Enter to run, Shift+Enter for newline)
+    document.getElementById('driversQuery').addEventListener('keydown', (e) => {{
+      if (e.key === 'Enter' && !e.shiftKey) {{
+        e.preventDefault();
+        runDriversQuery();
+      }}
+    }});
+
+    document.getElementById('releasesQuery').addEventListener('keydown', (e) => {{
+      if (e.key === 'Enter' && !e.shiftKey) {{
+        e.preventDefault();
+        runReleasesQuery();
+      }}
+    }});
+
+    document.getElementById('librariesQuery').addEventListener('keydown', (e) => {{
+      if (e.key === 'Enter' && !e.shiftKey) {{
+        e.preventDefault();
+        runLibrariesQuery();
+      }}
+    }});
+
+    document.getElementById('symbolsQuery').addEventListener('keydown', (e) => {{
+      if (e.key === 'Enter' && !e.shiftKey) {{
+        e.preventDefault();
+        runSymbolsQuery();
+      }}
+    }});
 
   }} catch (err) {{
     console.error('Critical error during initialization:', err);
@@ -2051,7 +2539,11 @@ init();</script>
     timeline_svg = timeline_svg,
     releases_chart_svg = releases_chart_svg,
     libraries_chart_svg = libraries_chart_svg,
-    symbols_chart_svg = symbols_chart_svg
+    symbols_chart_svg = symbols_chart_svg,
+    drivers_size = drivers_size,
+    releases_size = releases_size,
+    libraries_size = libraries_size,
+    symbols_size = symbols_size
     )
 }
 

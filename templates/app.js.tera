@@ -1,0 +1,627 @@
+<script type="module">
+let db;
+let loadingSteps = {};
+
+function updateLoadingStep(id, status, message) {
+  if (!loadingSteps[id]) {
+    const stepDiv = document.createElement('div');
+    stepDiv.id = `step-${id}`;
+    stepDiv.className = 'loading-step';
+    document.getElementById('loadingSteps').appendChild(stepDiv);
+    loadingSteps[id] = stepDiv;
+  }
+
+  const stepDiv = loadingSteps[id];
+  stepDiv.className = `loading-step ${status}`;
+
+  const icon = status === 'active' ? '⏳' : status === 'success' ? '✓' : status === 'error' ? '✗' : '';
+  stepDiv.textContent = `${icon} ${message}`;
+}
+
+function setTableStatus(tableId, status, message) {
+  const statusEl = document.getElementById(`${tableId}Status`);
+  if (statusEl) {
+    statusEl.className = `status-indicator ${status}`;
+    const icon = status === 'loading' ? '⏳' : status === 'success' ? '✓' : status === 'error' ? '✗' : '';
+    statusEl.textContent = message ? `${icon} ${message}` : icon;
+  }
+}
+
+function showError(title, message, details) {
+  const errorDiv = document.createElement('div');
+  errorDiv.className = 'error-details';
+  errorDiv.innerHTML = `
+    <h3>${title}</h3>
+    <p>${message}</p>
+    ${details ? `<pre>${details}</pre>` : ''}
+  `;
+  document.getElementById('globalLoading').insertAdjacentElement('afterend', errorDiv);
+}
+
+async function initDuckDB() {
+  updateLoadingStep('import', 'active', 'Loading DuckDB WASM module...');
+
+  let duckdb;
+  try {
+    duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm');
+    updateLoadingStep('import', 'success', 'DuckDB WASM module loaded');
+  } catch (err) {
+    updateLoadingStep('import', 'error', 'Failed to load DuckDB WASM module');
+    throw new Error(`Failed to import DuckDB WASM: ${err.message}`);
+  }
+
+  updateLoadingStep('init', 'active', 'Initializing DuckDB...');
+
+  try {
+    const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+    const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+
+    const worker_url = URL.createObjectURL(
+      new Blob([`importScripts("${bundle.mainWorker}");`], {type: "text/javascript"})
+    );
+
+    const worker = new Worker(worker_url);
+    const logger = new duckdb.ConsoleLogger();
+    db = new duckdb.AsyncDuckDB(logger, worker);
+    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+    URL.revokeObjectURL(worker_url);
+
+    updateLoadingStep('init', 'success', 'DuckDB initialized');
+  } catch (err) {
+    updateLoadingStep('init', 'error', 'Failed to initialize DuckDB');
+    throw new Error(`Failed to initialize DuckDB: ${err.message}`);
+  }
+
+  // Register parquet files in DuckDB's file system
+  const files = [
+    { name: 'drivers.parquet', id: 'drivers' },
+    { name: 'releases.parquet', id: 'releases' },
+    { name: 'libraries.parquet', id: 'libraries' },
+    { name: 'symbols.parquet', id: 'symbols' }
+  ];
+
+  for (const file of files) {
+    updateLoadingStep(`fetch-${file.name}`, 'active', `Fetching ${file.name}...`);
+    try {
+      const response = await fetch(file.name);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const buffer = await response.arrayBuffer();
+      await db.registerFileBuffer(file.name, new Uint8Array(buffer));
+
+      const sizeKB = (buffer.byteLength / 1024).toFixed(1);
+      updateLoadingStep(`fetch-${file.name}`, 'success', `${file.name} loaded (${sizeKB} KB)`);
+
+      // Update download link with file size
+      const sizeEl = document.getElementById(`size-${file.id}`);
+      if (sizeEl) {
+        sizeEl.textContent = `${sizeKB} KB`;
+      }
+    } catch (err) {
+      updateLoadingStep(`fetch-${file.name}`, 'error', `Failed to load ${file.name}`);
+
+      // Update download link with error
+      const sizeEl = document.getElementById(`size-${file.id}`);
+      if (sizeEl) {
+        sizeEl.textContent = 'Error loading';
+        sizeEl.style.color = '#dc3545';
+      }
+
+      throw new Error(`Failed to fetch ${file.name}: ${err.message}`);
+    }
+  }
+}
+
+function convertBigIntsToNumbers(obj) {
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === 'bigint') {
+      // Convert BigInt to Number for JavaScript compatibility
+      result[key] = Number(value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+async function queryDuckDB(sql, context) {
+  let conn;
+  try {
+    conn = await db.connect();
+    const result = await conn.query(sql);
+    const data = result.toArray().map(row => convertBigIntsToNumbers(Object.fromEntries(Object.entries(row))));
+    return data;
+  } catch (err) {
+    console.error(`Query failed [${context}]:`, err);
+    throw new Error(`Query failed: ${err.message}`);
+  } finally {
+    if (conn) {
+      try {
+        await conn.close();
+      } catch (e) {
+        console.warn('Failed to close connection:', e);
+      }
+    }
+  }
+}
+
+let driversGrid = null;
+
+async function loadDriversTable(customSQL) {
+  console.log('loadDriversTable called with customSQL:', customSQL);
+  setTableStatus('drivers', 'loading', 'Loading...');
+
+  try {
+    const sql = customSQL || document.getElementById('driversQuery').value;
+    console.log('Executing SQL:', sql);
+    const data = await queryDuckDB(sql, 'drivers');
+    console.log('Query returned', data?.length, 'rows');
+
+    if (!data || data.length === 0) {
+      setTableStatus('drivers', 'error', 'No data');
+      if (driversGrid) {
+        driversGrid.destroy();
+        driversGrid = null;
+      }
+      return;
+    }
+
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150
+    }));
+
+    const gridOptions = {
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {
+        resizable: true,
+        sortable: true,
+        filter: true
+      },
+      pagination: true,
+      paginationPageSize: 20
+    };
+
+    // Destroy existing grid before creating new one
+    if (driversGrid) {
+      driversGrid.destroy();
+    }
+
+    driversGrid = agGrid.createGrid(document.getElementById('driversGrid'), gridOptions);
+
+    setTableStatus('drivers', 'success', `${data.length} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-drivers');
+    if (statEl) {
+      statEl.textContent = data.length;
+    }
+  } catch (err) {
+    console.error('Failed to load drivers table:', err);
+    setTableStatus('drivers', 'error', err.message);
+    if (driversGrid) {
+      driversGrid.destroy();
+      driversGrid = null;
+    }
+  }
+}
+
+async function runDriversQuery() {
+  console.log('Running drivers query...');
+  const queryText = document.getElementById('driversQuery').value;
+  console.log('Query:', queryText);
+  try {
+    await loadDriversTable();
+  } catch (err) {
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }
+}
+
+let releasesGrid = null;
+
+async function loadReleasesTable(customSQL) {
+  setTableStatus('releases', 'loading', 'Loading...');
+
+  try {
+    const sql = customSQL || document.getElementById('releasesQuery').value;
+    const data = await queryDuckDB(sql, 'releases');
+
+    if (!data || data.length === 0) {
+      setTableStatus('releases', 'error', 'No data');
+      if (releasesGrid) {
+        releasesGrid.destroy();
+        releasesGrid = null;
+      }
+      return;
+    }
+
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150,
+      cellRenderer: (params) => {
+        // Auto-link URL fields
+        if (key.includes('url') && params.value && typeof params.value === 'string' && params.value.startsWith('http')) {
+          return `<a href="${params.value}" target="_blank">${params.value}</a>`;
+        }
+        // Format array fields
+        if (Array.isArray(params.value)) {
+          return params.value.join(', ');
+        }
+        return params.value;
+      }
+    }));
+
+    const gridOptions = {
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {
+        resizable: true,
+        sortable: true,
+        filter: true
+      },
+      pagination: true,
+      paginationPageSize: 50
+    };
+
+    // Destroy existing grid before creating new one
+    if (releasesGrid) {
+      releasesGrid.destroy();
+    }
+
+    releasesGrid = agGrid.createGrid(document.getElementById('releasesGrid'), gridOptions);
+
+    setTableStatus('releases', 'success', `${data.length} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-releases');
+    if (statEl) {
+      statEl.textContent = data.length;
+    }
+  } catch (err) {
+    console.error('Failed to load releases table:', err);
+    setTableStatus('releases', 'error', err.message);
+    if (releasesGrid) {
+      releasesGrid.destroy();
+      releasesGrid = null;
+    }
+  }
+}
+
+async function runReleasesQuery() {
+  console.log('Running releases query...');
+  const queryText = document.getElementById('releasesQuery').value;
+  console.log('Query:', queryText);
+  try {
+    await loadReleasesTable();
+  } catch (err) {
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }
+}
+
+let librariesGrid = null;
+
+async function loadLibrariesTable(customSQL) {
+  setTableStatus('libraries', 'loading', 'Loading...');
+
+  try {
+    const sql = customSQL || document.getElementById('librariesQuery').value;
+    const data = await queryDuckDB(sql, 'libraries');
+
+    if (!data || data.length === 0) {
+      setTableStatus('libraries', 'error', 'No data');
+      if (librariesGrid) {
+        librariesGrid.destroy();
+        librariesGrid = null;
+      }
+      return;
+    }
+
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150,
+      cellRenderer: (params) => {
+        // Auto-link URL fields
+        if (key.includes('url') && params.value && typeof params.value === 'string' && params.value.startsWith('http')) {
+          return `<a href="${params.value}" target="_blank">${params.value}</a>`;
+        }
+        return params.value;
+      }
+    }));
+
+    const gridOptions = {
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {
+        resizable: true,
+        sortable: true,
+        filter: true
+      },
+      pagination: true,
+      paginationPageSize: 50
+    };
+
+    // Destroy existing grid before creating new one
+    if (librariesGrid) {
+      librariesGrid.destroy();
+    }
+
+    librariesGrid = agGrid.createGrid(document.getElementById('librariesGrid'), gridOptions);
+
+    setTableStatus('libraries', 'success', `${data.length} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-libraries');
+    if (statEl) {
+      statEl.textContent = data.length;
+    }
+  } catch (err) {
+    console.error('Failed to load libraries table:', err);
+    setTableStatus('libraries', 'error', err.message);
+    if (librariesGrid) {
+      librariesGrid.destroy();
+      librariesGrid = null;
+    }
+  }
+}
+
+async function runLibrariesQuery() {
+  console.log('Running libraries query...');
+  const queryText = document.getElementById('librariesQuery').value;
+  console.log('Query:', queryText);
+  try {
+    await loadLibrariesTable();
+  } catch (err) {
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }
+}
+
+let symbolsGrid = null;
+
+async function loadSymbolsTable(customSQL) {
+  setTableStatus('symbols', 'loading', 'Loading...');
+
+  try {
+    const sql = customSQL || document.getElementById('symbolsQuery').value;
+    const data = await queryDuckDB(sql, 'symbols');
+
+    if (!data || data.length === 0) {
+      setTableStatus('symbols', 'error', 'No data');
+      if (symbolsGrid) {
+        symbolsGrid.destroy();
+        symbolsGrid = null;
+      }
+      return;
+    }
+
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      width: 150,
+      cellRenderer: (params) => {
+        // Special rendering for boolean is_stub field
+        if (key === 'is_stub' && typeof params.value === 'boolean') {
+          return params.value ? '✓' : '✗';
+        }
+        return params.value;
+      }
+    }));
+
+    const gridOptions = {
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {
+        resizable: true,
+        sortable: true,
+        filter: true
+      },
+      pagination: true,
+      paginationPageSize: 100
+    };
+
+    // Destroy existing grid before creating new one
+    if (symbolsGrid) {
+      symbolsGrid.destroy();
+    }
+
+    symbolsGrid = agGrid.createGrid(document.getElementById('symbolsGrid'), gridOptions);
+
+    setTableStatus('symbols', 'success', `${data.length} rows`);
+
+    // Update stats card
+    const statEl = document.getElementById('stat-symbols');
+    if (statEl) {
+      statEl.textContent = data.length;
+    }
+  } catch (err) {
+    console.error('Failed to load symbols table:', err);
+    setTableStatus('symbols', 'error', err.message);
+    if (symbolsGrid) {
+      symbolsGrid.destroy();
+      symbolsGrid = null;
+    }
+  }
+}
+
+async function runSymbolsQuery() {
+  console.log('Running symbols query...');
+  const queryText = document.getElementById('symbolsQuery').value;
+  console.log('Query:', queryText);
+  try {
+    await loadSymbolsTable();
+  } catch (err) {
+    console.error('Query execution failed:', err);
+    alert('Query failed: ' + err.message);
+  }
+}
+
+// Expose query functions to global scope for inline onclick handlers
+window.runDriversQuery = runDriversQuery;
+window.runReleasesQuery = runReleasesQuery;
+window.runLibrariesQuery = runLibrariesQuery;
+window.runSymbolsQuery = runSymbolsQuery;
+
+async function init() {
+  const globalLoadingEl = document.getElementById('globalLoading');
+
+  try {
+    // Check if AG Grid is loaded
+    if (typeof agGrid === 'undefined') {
+      throw new Error('AG Grid library failed to load. Check your internet connection or try refreshing the page.');
+    }
+
+    // Initialize DuckDB
+    await initDuckDB();
+
+    // Load all tables
+    updateLoadingStep('tables', 'active', 'Loading tables...');
+
+    const results = await Promise.allSettled([
+      loadDriversTable(),
+      loadReleasesTable(),
+      loadLibrariesTable(),
+      loadSymbolsTable()
+    ]);
+
+    // Check for any failures
+    const failures = results.filter(r => r.status === 'rejected');
+    if (failures.length > 0) {
+      updateLoadingStep('tables', 'error', `${failures.length} table(s) failed to load`);
+
+      // Show detailed error for first failure
+      const firstError = failures[0].reason;
+      showError(
+        'Failed to Load Tables',
+        `${failures.length} of 4 tables failed to load.`,
+        firstError.message
+      );
+    } else {
+      updateLoadingStep('tables', 'success', 'All tables loaded successfully');
+    }
+
+    // Hide global loading indicator
+    globalLoadingEl.classList.add('hidden');
+
+    // Add keyboard shortcuts for query execution (Enter to run, Shift+Enter for newline)
+    document.getElementById('driversQuery').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runDriversQuery();
+      }
+    });
+
+    document.getElementById('releasesQuery').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runReleasesQuery();
+      }
+    });
+
+    document.getElementById('librariesQuery').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runLibrariesQuery();
+      }
+    });
+
+    document.getElementById('symbolsQuery').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runSymbolsQuery();
+      }
+    });
+
+  } catch (err) {
+    console.error('Critical error during initialization:', err);
+    updateLoadingStep('init-error', 'error', 'Initialization failed');
+
+    showError(
+      'Failed to Initialize Dashboard',
+      'The dashboard could not be loaded. Please check the console for details.',
+      err.message
+    );
+
+    // Keep loading indicator visible but update text
+    const stepsDiv = document.getElementById('loadingSteps');
+    stepsDiv.style.marginBottom = '20px';
+  }
+}
+
+// Tab switching functionality
+function switchTab(tabName) {
+  // Hide all tab contents
+  document.querySelectorAll('.tab-content').forEach(content => {
+    content.classList.remove('active');
+  });
+
+  // Deactivate all tab buttons
+  document.querySelectorAll('.tab-button').forEach(button => {
+    button.classList.remove('active');
+  });
+
+  // Show selected tab content
+  const tabContent = document.getElementById(`tab-${tabName}`);
+  if (tabContent) {
+    tabContent.classList.add('active');
+  }
+
+  // Activate selected tab button
+  const tabButton = document.querySelector(`[data-tab="${tabName}"]`);
+  if (tabButton) {
+    tabButton.classList.add('active');
+  }
+}
+
+// Setup tab click handlers
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.tab-button').forEach(button => {
+    button.addEventListener('click', () => {
+      const tabName = button.getAttribute('data-tab');
+      switchTab(tabName);
+    });
+  });
+});
+
+// Global error handler for unhandled errors
+window.addEventListener('error', (event) => {
+  console.error('Unhandled error:', event.error);
+  showError(
+    'Unexpected Error',
+    'An unexpected error occurred while loading the dashboard.',
+    event.error ? event.error.message : event.message
+  );
+});
+
+// Global handler for unhandled promise rejections
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+  showError(
+    'Unexpected Error',
+    'An unexpected error occurred while loading the dashboard.',
+    event.reason ? event.reason.message : String(event.reason)
+  );
+});
+
+// Start initialization
+init();
+</script>

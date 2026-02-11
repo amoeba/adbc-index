@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADBC Driver Index</title>
+<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm" type="module"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/dist/ag-grid-community.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-grid.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-theme-alpine-dark.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+{% include "style.css.tera" %}
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>ADBC Driver Index</h1>
+    <div class="subtitle">Arrow Database Connectivity · Binary Analysis</div>
+  </div>
+  <a href="https://github.com/amoeba/adbc-dindex" target="_blank" rel="noopener noreferrer" class="github-link" aria-label="View on GitHub">
+    <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+  </a>
+</header>
+
+<div class="container">
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Total Drivers</div>
+    <div class="stat-value" id="stat-drivers">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Releases</div>
+    <div class="stat-value" id="stat-releases">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Libraries</div>
+    <div class="stat-value" id="stat-libraries">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Symbols</div>
+    <div class="stat-value" id="stat-symbols">—</div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab-button active" data-tab="overview">
+    Overview<span class="status-indicator" id="overviewStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="drivers">
+    Drivers<span class="status-indicator" id="driversStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="releases">
+    Releases<span class="status-indicator" id="releasesStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="libraries">
+    Libraries<span class="status-indicator" id="librariesStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="symbols">
+    Symbols<span class="status-indicator" id="symbolsStatus"></span>
+  </button>
+</div>
+
+<div class="tab-content active" id="tab-overview">
+<h2>Overview</h2>
+
+<div class="charts-grid">
+  <div class="chart-container">
+    <h3>Drivers Released Over Time</h3>
+    {{ timeline_svg | safe }}
+  </div>
+  <div class="chart-container">
+    <h3>Releases per Driver</h3>
+    {{ releases_chart_svg | safe }}
+  </div>
+  <div class="chart-container">
+    <h3>Average Library Size by Driver</h3>
+    {{ libraries_chart_svg | safe }}
+  </div>
+  <div class="chart-container">
+    <h3>Unique Symbols per Driver</h3>
+    {{ symbols_chart_svg | safe }}
+  </div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-drivers">
+<h2>Drivers</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="drivers.parquet" class="download-link" download>drivers.parquet ({{ drivers_size }})</a>
+</div>
+
+<div class="table-container">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="driversQuery" placeholder="SELECT * FROM read_parquet('drivers.parquet')">SELECT * FROM read_parquet('drivers.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runDriversQuery()">Run Query ⏎</button>
+    </div>
+  </div>
+  <div id="driversGrid" class="ag-theme-alpine-dark"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-releases">
+<h2>Releases</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="releases.parquet" class="download-link" download>releases.parquet ({{ releases_size }})</a>
+</div>
+
+<div class="table-container">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="releasesQuery" placeholder="SELECT * FROM read_parquet('releases.parquet')">SELECT * FROM read_parquet('releases.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runReleasesQuery()">Run Query ⏎</button>
+    </div>
+  </div>
+  <div id="releasesGrid" class="ag-theme-alpine-dark"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-libraries">
+<h2>Libraries</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="libraries.parquet" class="download-link" download>libraries.parquet ({{ libraries_size }})</a>
+</div>
+
+<div class="table-container">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="librariesQuery" placeholder="SELECT * FROM read_parquet('libraries.parquet')">SELECT * FROM read_parquet('libraries.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runLibrariesQuery()">Run Query ⏎</button>
+    </div>
+  </div>
+  <div id="librariesGrid" class="ag-theme-alpine-dark"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-symbols">
+<h2>Symbols</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="symbols.parquet" class="download-link" download>symbols.parquet ({{ symbols_size }})</a>
+</div>
+
+<div class="table-container">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="symbolsQuery" placeholder="SELECT * FROM read_parquet('symbols.parquet')">SELECT * FROM read_parquet('symbols.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runSymbolsQuery()">Run Query ⏎</button>
+    </div>
+  </div>
+  <div id="symbolsGrid" class="ag-theme-alpine-dark"></div>
+</div>
+</div>
+
+<div class="loading" id="globalLoading">
+  <div id="loadingSteps"></div>
+</div>
+
+</div>
+
+<footer>
+  <div class="container">
+    Generated by ADBC Index · Data stored in Parquet format · Powered by DuckDB WASM
+  </div>
+</footer>
+
+{% include "app.js.tera" %}
+
+</body>
+</html>

@@ -25,6 +25,7 @@ goblin = "0.8"
 capstone = "0.14"
 semver = "1.0"
 glob = "0.3"
+tera = "1.20"
 
 [dev-dependencies]
 tempfile = "3.0"
