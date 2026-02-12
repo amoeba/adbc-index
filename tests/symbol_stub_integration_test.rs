@@ -88,11 +88,7 @@ fn test_extract_symbols_all_platforms() {
         // Verify symbols are sorted
         let mut sorted = symbols.clone();
         sorted.sort();
-        assert_eq!(
-            symbols, sorted,
-            "{}: Symbols should be sorted",
-            platform
-        );
+        assert_eq!(symbols, sorted, "{}: Symbols should be sorted", platform);
     }
 }
 
@@ -101,8 +97,7 @@ fn test_stub_detection_macos() {
     // Note: Stub detection currently only works reliably on macOS ARM64
     let path = "test_artifacts/tiniest-adbc-driver/tiny-driver-macos-latest/libtiny.dylib";
 
-    let analyses = analyze_stubs(path)
-        .expect("macOS stub analysis failed");
+    let analyses = analyze_stubs(path).expect("macOS stub analysis failed");
 
     // Should analyze exactly 14 functions
     assert_eq!(
@@ -114,12 +109,7 @@ fn test_stub_detection_macos() {
 
     // Count stubs
     let stubs: Vec<_> = analyses.iter().filter(|a| a.is_stub).collect();
-    assert_eq!(
-        stubs.len(),
-        7,
-        "Expected 7 stubs, got {}",
-        stubs.len()
-    );
+    assert_eq!(stubs.len(), 7, "Expected 7 stubs, got {}", stubs.len());
 
     // Verify expected stub functions
     for &expected_stub in MACOS_EXPECTED_STUBS {
@@ -339,10 +329,7 @@ fn test_extract_symbols_missing_file() {
     let filter = SymbolFilter::default();
     let result = extract_symbols("nonexistent/path/file.so", &filter);
 
-    assert!(
-        result.is_err(),
-        "Should return error for missing file"
-    );
+    assert!(result.is_err(), "Should return error for missing file");
 }
 
 #[test]
@@ -360,10 +347,7 @@ fn test_extract_symbols_invalid_binary() {
 
     let result = extract_symbols(temp_file.path(), &filter);
 
-    assert!(
-        result.is_err(),
-        "Should return error for invalid binary"
-    );
+    assert!(result.is_err(), "Should return error for invalid binary");
 }
 
 #[test]
@@ -372,8 +356,7 @@ fn test_macos_symbol_underscore_stripping() {
     let filter = SymbolFilter::default();
     let path = "test_artifacts/tiniest-adbc-driver/tiny-driver-macos-latest/libtiny.dylib";
 
-    let symbols = extract_symbols(path, &filter)
-        .expect("macOS symbol extraction failed");
+    let symbols = extract_symbols(path, &filter).expect("macOS symbol extraction failed");
 
     // None of the symbols should start with underscore
     for symbol in &symbols {
@@ -397,8 +380,7 @@ fn test_macos_functions_have_valid_status_codes() {
     // Verify macOS functions that have constant returns have valid ADBC status codes
     let path = "test_artifacts/tiniest-adbc-driver/tiny-driver-macos-latest/libtiny.dylib";
 
-    let analyses = analyze_stubs(path)
-        .expect("macOS stub analysis failed");
+    let analyses = analyze_stubs(path).expect("macOS stub analysis failed");
 
     for analysis in &analyses {
         if let Some(constant) = analysis.constant_return {

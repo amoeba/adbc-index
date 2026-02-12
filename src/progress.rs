@@ -15,7 +15,10 @@ impl ProgressTracker {
 
         main_bar.set_style(
             ProgressStyle::default_bar()
-                .template(&format!("{{spinner}} {} [{{bar:40}}] {{pos}}/{{len}} {{msg}}", prefix))
+                .template(&format!(
+                    "{{spinner}} {} [{{bar:40}}] {{pos}}/{{len}} {{msg}}",
+                    prefix
+                ))
                 .unwrap()
                 .progress_chars("█▓░"),
         );
@@ -44,7 +47,10 @@ impl ProgressTracker {
 
         pb.set_style(
             ProgressStyle::default_bar()
-                .template(&format!("  ├─ {} [{{bar:30}}] {{pos}}/{{len}} {{msg}}", name))
+                .template(&format!(
+                    "  ├─ {} [{{bar:30}}] {{pos}}/{{len}} {{msg}}",
+                    name
+                ))
                 .unwrap()
                 .progress_chars("█▓░"),
         );

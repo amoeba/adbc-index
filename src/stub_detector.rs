@@ -144,11 +144,12 @@ pub fn analyze_elf_stubs_with_buffer(
 fn elf_vaddr_to_file_offset(elf: &goblin::elf::Elf, vaddr: u64) -> Option<u64> {
     for section in &elf.section_headers {
         // Only consider sections that are loaded into memory (ALLOC flag)
-        if section.sh_flags & goblin::elf::section_header::SHF_ALLOC as u64 != 0 {
-            if vaddr >= section.sh_addr && vaddr < section.sh_addr + section.sh_size {
-                let offset_in_section = vaddr - section.sh_addr;
-                return Some(section.sh_offset + offset_in_section);
-            }
+        if section.sh_flags & goblin::elf::section_header::SHF_ALLOC as u64 != 0
+            && vaddr >= section.sh_addr
+            && vaddr < section.sh_addr + section.sh_size
+        {
+            let offset_in_section = vaddr - section.sh_addr;
+            return Some(section.sh_offset + offset_in_section);
         }
     }
     None
@@ -180,13 +181,15 @@ pub fn analyze_pe_stubs_with_buffer(
     let mut results = Vec::new();
 
     // Build section information for efficient RVA to offset conversion
-    let sections: Vec<SectionInfo> = pe.sections.iter().map(|section| {
-        SectionInfo {
+    let sections: Vec<SectionInfo> = pe
+        .sections
+        .iter()
+        .map(|section| SectionInfo {
             virtual_address: section.virtual_address,
             virtual_size: section.virtual_size.min(section.size_of_raw_data),
             pointer_to_raw_data: section.pointer_to_raw_data,
-        }
-    }).collect();
+        })
+        .collect();
 
     for export in &pe.exports {
         if let Some(name) = export.name {
@@ -217,37 +220,32 @@ pub fn analyze_mach_stubs_with_buffer(
 ) -> Result<Vec<StubAnalysis>> {
     let mut results = Vec::new();
 
-    match mach {
-        goblin::mach::Mach::Binary(macho) => {
-            for sym in macho.symbols() {
-                if let Ok((name, nlist)) = sym {
-                    let name = name.trim_start_matches('_');
+    if let goblin::mach::Mach::Binary(macho) = mach {
+        for (name, nlist) in macho.symbols().flatten() {
+            let name = name.trim_start_matches('_');
 
-                    // Only analyze ADBC functions
-                    if !name.starts_with("Adbc") {
-                        continue;
-                    }
+            // Only analyze ADBC functions
+            if !name.starts_with("Adbc") {
+                continue;
+            }
 
-                    if nlist.is_global() && !nlist.is_undefined() {
-                        let offset = nlist.n_value as usize;
-                        if offset < buffer.len() {
-                            let func_bytes = &buffer[offset..buffer.len().min(offset + 50)];
+            if nlist.is_global() && !nlist.is_undefined() {
+                let offset = nlist.n_value as usize;
+                if offset < buffer.len() {
+                    let func_bytes = &buffer[offset..buffer.len().min(offset + 50)];
 
-                            // Detect architecture from mach-o header
-                            let is_arm64 = macho.header.cputype() == goblin::mach::cputype::CPU_TYPE_ARM64;
+                    // Detect architecture from mach-o header
+                    let is_arm64 = macho.header.cputype() == goblin::mach::cputype::CPU_TYPE_ARM64;
 
-                            let analysis = if is_arm64 {
-                                analyze_arm64_function(name, func_bytes)
-                            } else {
-                                analyze_x86_function(name, func_bytes)
-                            };
-                            results.push(analysis);
-                        }
-                    }
+                    let analysis = if is_arm64 {
+                        analyze_arm64_function(name, func_bytes)
+                    } else {
+                        analyze_x86_function(name, func_bytes)
+                    };
+                    results.push(analysis);
                 }
             }
         }
-        _ => {}
     }
 
     Ok(results)
@@ -267,7 +265,7 @@ fn analyze_x86_function(name: &str, bytes: &[u8]) -> StubAnalysis {
     // Try to detect simple constant return patterns using Capstone
     let constant = disassemble_x86_constant_return(bytes);
 
-    let status_code = constant.and_then(|c| AdbcStatusCode::from_i32(c));
+    let status_code = constant.and_then(AdbcStatusCode::from_i32);
     let is_stub = status_code == Some(AdbcStatusCode::NotImplemented);
 
     StubAnalysis {
@@ -291,7 +289,7 @@ fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
 
     let constant = disassemble_arm64_constant_return(bytes);
 
-    let status_code = constant.and_then(|c| AdbcStatusCode::from_i32(c));
+    let status_code = constant.and_then(AdbcStatusCode::from_i32);
     let is_stub = status_code == Some(AdbcStatusCode::NotImplemented);
 
     StubAnalysis {
@@ -323,60 +321,62 @@ fn disassemble_x86_constant_return(bytes: &[u8]) -> Option<i32> {
         // Disassemble the function
         let insns = cs.disasm_all(bytes, 0x0).ok()?;
 
-    // Look for pattern: mov to return register (eax/rax/al) followed by ret
-    let mut last_mov_value: Option<i32> = None;
+        // Look for pattern: mov to return register (eax/rax/al) followed by ret
+        let mut last_mov_value: Option<i32> = None;
 
-    for insn in insns.as_ref() {
-        let mnemonic = insn.mnemonic().unwrap_or("");
+        for insn in insns.as_ref() {
+            let mnemonic = insn.mnemonic().unwrap_or("");
 
-        // Check for XOR eax, eax (returns 0)
-        if mnemonic == "xor" {
-            if let Ok(detail) = cs.insn_detail(insn) {
-                let arch_detail = detail.arch_detail();
-                let ops = arch_detail.operands();
+            // Check for XOR eax, eax (returns 0)
+            if mnemonic == "xor" {
+                if let Ok(detail) = cs.insn_detail(insn) {
+                    let arch_detail = detail.arch_detail();
+                    let ops = arch_detail.operands();
 
-                // XOR of same register = 0
-                if ops.len() == 2 {
-                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
-                        // Check if both operands are the same register (eax, rax, or al)
-                        if is_same_x86_register(op1, op2) && is_return_register_x86(op1) {
-                            last_mov_value = Some(0);
+                    // XOR of same register = 0
+                    if ops.len() == 2 {
+                        if let (Some(op1), Some(op2)) = (ops.first(), ops.get(1)) {
+                            // Check if both operands are the same register (eax, rax, or al)
+                            if is_same_x86_register(op1, op2) && is_return_register_x86(op1) {
+                                last_mov_value = Some(0);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Check for MOV to return register with immediate
-        if mnemonic == "mov" || mnemonic == "movzx" {
-            if let Ok(detail) = cs.insn_detail(insn) {
-                let arch_detail = detail.arch_detail();
-                let ops = arch_detail.operands();
+            // Check for MOV to return register with immediate
+            if mnemonic == "mov" || mnemonic == "movzx" {
+                if let Ok(detail) = cs.insn_detail(insn) {
+                    let arch_detail = detail.arch_detail();
+                    let ops = arch_detail.operands();
 
-                // MOV dst, imm
-                if ops.len() == 2 {
-                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
-                        // First operand should be a return register (eax, rax, al)
-                        if is_return_register_x86(op1) {
-                            // Second operand should be an immediate
-                            if let capstone::arch::ArchOperand::X86Operand(x86_op) = op2 {
-                                if let capstone::arch::x86::X86OperandType::Imm(imm_val) = x86_op.op_type {
-                                    last_mov_value = Some(imm_val as i32);
+                    // MOV dst, imm
+                    if ops.len() == 2 {
+                        if let (Some(op1), Some(op2)) = (ops.first(), ops.get(1)) {
+                            // First operand should be a return register (eax, rax, al)
+                            if is_return_register_x86(op1) {
+                                // Second operand should be an immediate
+                                if let capstone::arch::ArchOperand::X86Operand(x86_op) = op2 {
+                                    if let capstone::arch::x86::X86OperandType::Imm(imm_val) =
+                                        x86_op.op_type
+                                    {
+                                        last_mov_value = Some(imm_val as i32);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // Check for RET instruction
+            if mnemonic == "ret" {
+                return last_mov_value;
+            }
         }
 
-        // Check for RET instruction
-        if mnemonic == "ret" {
-            return last_mov_value;
-        }
-    }
-
-    None
+        None
     }));
 
     // If panic occurred or error, return None
@@ -389,19 +389,30 @@ fn is_return_register_x86(op: &capstone::arch::ArchOperand) -> bool {
         if let capstone::arch::x86::X86OperandType::Reg(reg_id) = x86_op.op_type {
             let reg = reg_id.0 as u32;
             // Check for AL, AX, EAX, RAX
-            return reg == capstone::arch::x86::X86Reg::X86_REG_AL as u32
-                || reg == capstone::arch::x86::X86Reg::X86_REG_AX as u32
-                || reg == capstone::arch::x86::X86Reg::X86_REG_EAX as u32
-                || reg == capstone::arch::x86::X86Reg::X86_REG_RAX as u32;
+            return reg == capstone::arch::x86::X86Reg::X86_REG_AL
+                || reg == capstone::arch::x86::X86Reg::X86_REG_AX
+                || reg == capstone::arch::x86::X86Reg::X86_REG_EAX
+                || reg == capstone::arch::x86::X86Reg::X86_REG_RAX;
         }
     }
     false
 }
 
 /// Check if two x86 operands reference the same register
-fn is_same_x86_register(op1: &capstone::arch::ArchOperand, op2: &capstone::arch::ArchOperand) -> bool {
-    if let (capstone::arch::ArchOperand::X86Operand(x86_op1), capstone::arch::ArchOperand::X86Operand(x86_op2)) = (op1, op2) {
-        if let (capstone::arch::x86::X86OperandType::Reg(reg1), capstone::arch::x86::X86OperandType::Reg(reg2)) = (&x86_op1.op_type, &x86_op2.op_type) {
+fn is_same_x86_register(
+    op1: &capstone::arch::ArchOperand,
+    op2: &capstone::arch::ArchOperand,
+) -> bool {
+    if let (
+        capstone::arch::ArchOperand::X86Operand(x86_op1),
+        capstone::arch::ArchOperand::X86Operand(x86_op2),
+    ) = (op1, op2)
+    {
+        if let (
+            capstone::arch::x86::X86OperandType::Reg(reg1),
+            capstone::arch::x86::X86OperandType::Reg(reg2),
+        ) = (&x86_op1.op_type, &x86_op2.op_type)
+        {
             return reg1 == reg2;
         }
     }
@@ -429,63 +440,67 @@ fn disassemble_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
         // Disassemble the function
         let insns = cs.disasm_all(bytes, 0x0).ok()?;
 
-    // Look for pattern: mov to return register (w0/x0) followed by ret
-    let mut last_mov_value: Option<i32> = None;
+        // Look for pattern: mov to return register (w0/x0) followed by ret
+        let mut last_mov_value: Option<i32> = None;
 
-    for insn in insns.as_ref() {
-        let mnemonic = insn.mnemonic().unwrap_or("");
+        for insn in insns.as_ref() {
+            let mnemonic = insn.mnemonic().unwrap_or("");
 
-        // Check for MOV to return register with immediate
-        if mnemonic == "mov" || mnemonic == "movz" {
-            if let Ok(detail) = cs.insn_detail(insn) {
-                let arch_detail = detail.arch_detail();
-                let ops = arch_detail.operands();
+            // Check for MOV to return register with immediate
+            if mnemonic == "mov" || mnemonic == "movz" {
+                if let Ok(detail) = cs.insn_detail(insn) {
+                    let arch_detail = detail.arch_detail();
+                    let ops = arch_detail.operands();
 
-                // MOV dst, imm
-                if ops.len() == 2 {
-                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
-                        // First operand should be a return register (w0 or x0)
-                        if is_return_register_arm64(op1) {
-                            // Second operand should be an immediate
-                            if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op2 {
-                                if let capstone::arch::arm64::Arm64OperandType::Imm(imm_val) = arm64_op.op_type {
-                                    last_mov_value = Some(imm_val as i32);
+                    // MOV dst, imm
+                    if ops.len() == 2 {
+                        if let (Some(op1), Some(op2)) = (ops.first(), ops.get(1)) {
+                            // First operand should be a return register (w0 or x0)
+                            if is_return_register_arm64(op1) {
+                                // Second operand should be an immediate
+                                if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op2 {
+                                    if let capstone::arch::arm64::Arm64OperandType::Imm(imm_val) =
+                                        arm64_op.op_type
+                                    {
+                                        last_mov_value = Some(imm_val as i32);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Check for MOVN (move NOT) - result is bitwise NOT of immediate
-        if mnemonic == "movn" {
-            if let Ok(detail) = cs.insn_detail(insn) {
-                let arch_detail = detail.arch_detail();
-                let ops = arch_detail.operands();
+            // Check for MOVN (move NOT) - result is bitwise NOT of immediate
+            if mnemonic == "movn" {
+                if let Ok(detail) = cs.insn_detail(insn) {
+                    let arch_detail = detail.arch_detail();
+                    let ops = arch_detail.operands();
 
-                if ops.len() == 2 {
-                    if let (Some(op1), Some(op2)) = (ops.get(0), ops.get(1)) {
-                        if is_return_register_arm64(op1) {
-                            if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op2 {
-                                if let capstone::arch::arm64::Arm64OperandType::Imm(imm_val) = arm64_op.op_type {
-                                    // MOVN stores the bitwise NOT of the immediate
-                                    last_mov_value = Some(!imm_val as i32);
+                    if ops.len() == 2 {
+                        if let (Some(op1), Some(op2)) = (ops.first(), ops.get(1)) {
+                            if is_return_register_arm64(op1) {
+                                if let capstone::arch::ArchOperand::Arm64Operand(arm64_op) = op2 {
+                                    if let capstone::arch::arm64::Arm64OperandType::Imm(imm_val) =
+                                        arm64_op.op_type
+                                    {
+                                        // MOVN stores the bitwise NOT of the immediate
+                                        last_mov_value = Some(!imm_val as i32);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // Check for RET instruction
+            if mnemonic == "ret" {
+                return last_mov_value;
+            }
         }
 
-        // Check for RET instruction
-        if mnemonic == "ret" {
-            return last_mov_value;
-        }
-    }
-
-    None
+        None
     }));
 
     // If panic occurred or error, return None
@@ -498,8 +513,8 @@ fn is_return_register_arm64(op: &capstone::arch::ArchOperand) -> bool {
         if let capstone::arch::arm64::Arm64OperandType::Reg(reg_id) = arm64_op.op_type {
             let reg = reg_id.0 as u32;
             // Check for W0 or X0
-            return reg == capstone::arch::arm64::Arm64Reg::ARM64_REG_W0 as u32
-                || reg == capstone::arch::arm64::Arm64Reg::ARM64_REG_X0 as u32;
+            return reg == capstone::arch::arm64::Arm64Reg::ARM64_REG_W0
+                || reg == capstone::arch::arm64::Arm64Reg::ARM64_REG_X0;
         }
     }
     false
@@ -513,7 +528,10 @@ mod tests {
     fn test_status_code_from_i32_valid() {
         // Test valid status codes
         assert_eq!(AdbcStatusCode::from_i32(0), Some(AdbcStatusCode::Ok));
-        assert_eq!(AdbcStatusCode::from_i32(2), Some(AdbcStatusCode::NotImplemented));
+        assert_eq!(
+            AdbcStatusCode::from_i32(2),
+            Some(AdbcStatusCode::NotImplemented)
+        );
         assert_eq!(AdbcStatusCode::from_i32(13), Some(AdbcStatusCode::Timeout));
     }
 
@@ -529,7 +547,10 @@ mod tests {
     fn test_status_code_names() {
         // Test status code name strings
         assert_eq!(AdbcStatusCode::Ok.name(), "ADBC_STATUS_OK");
-        assert_eq!(AdbcStatusCode::NotImplemented.name(), "ADBC_STATUS_NOT_IMPLEMENTED");
+        assert_eq!(
+            AdbcStatusCode::NotImplemented.name(),
+            "ADBC_STATUS_NOT_IMPLEMENTED"
+        );
         assert_eq!(AdbcStatusCode::Unknown.name(), "ADBC_STATUS_UNKNOWN");
         assert_eq!(AdbcStatusCode::Timeout.name(), "ADBC_STATUS_TIMEOUT");
     }

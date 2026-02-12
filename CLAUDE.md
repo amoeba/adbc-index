@@ -24,22 +24,28 @@ cargo test --test symbol_stub_integration_test
 ```
 
 ### Running the Tool
+
+The tool has three separate commands that should be run in sequence:
+
 ```bash
 # Set required environment variable
 export GITHUB_TOKEN=your_token_here
 
-# Download all driver releases
+# Step 1: Download driver releases from GitHub/PyPI
 cargo run --release -- download
 
-# Download specific driver
+# Download specific driver only
 cargo run --release -- download mysql
 
-# Full build: download + analyze + generate HTML
-cargo run --release -- build
+# Step 2: Analyze downloaded artifacts and generate parquet files
+cargo run --release -- analyze
+
+# Step 3: Generate HTML dashboard from parquet files
+cargo run --release -- html
 ```
 
 ### External Dependencies
-- **DuckDB CLI**: Required for HTML generation (`adbc-index build` command). Install with `brew install duckdb` on macOS.
+- **DuckDB CLI**: Required for HTML generation (`adbc-index html` command). Install with `brew install duckdb` on macOS.
 - **GITHUB_TOKEN**: Required environment variable for GitHub API access.
 
 ## Architecture
@@ -53,7 +59,7 @@ cargo run --release -- build
 
 4. **Artifact Parsing** (`src/artifact_parser.rs`): Extracts metadata (OS, architecture, version) from artifact filenames using multiple parsing strategies (wheel format, underscore-separated, dash-separated, etc.).
 
-5. **Library Extraction** (`src/main.rs:extract_and_find_library`): Extracts archives and locates shared libraries (.so, .dylib, .dll) inside them.
+5. **Library Extraction** (`src/main.rs:extract_and_find_library`): Extracts archives to temporary directories (not cache) and locates shared libraries (.so, .dylib, .dll) inside them. Temp files are automatically cleaned up after processing.
 
 6. **Symbol Analysis** (`src/symbols.rs`): Uses `goblin` to parse binary formats (ELF/PE/Mach-O) and extract exported symbols. Filters symbols by prefix (default: "Adbc").
 
@@ -66,6 +72,23 @@ cargo run --release -- build
    - `dist/symbols.parquet`: Exported symbols with stub detection results
 
 9. **HTML Dashboard** (`src/main.rs:html`): Uses DuckDB to query Parquet files and generates an HTML dashboard with SVG charts.
+
+### CLI Commands
+
+The tool provides three independent commands that should be run in sequence:
+
+1. **`download [driver]`**: Downloads driver releases from GitHub or PyPI. Optionally filter to a specific driver. Artifacts are cached in `cache/{driver}/{tag}/` with SHA256 verification. This step only downloads files; no analysis is performed.
+
+2. **`analyze`**: Processes all downloaded artifacts in the cache directory. For each artifact:
+   - Extracts libraries to temporary directories (using `/tmp/adbc-{driver}-{tag}-{pid}`)
+   - Extracts and analyzes symbols from shared libraries
+   - Detects stub implementations
+   - Generates parquet files in `dist/` directory
+   - Automatically cleans up temp files after processing
+
+   Note: The cache directory remains untouched during analysis (no `extracted/` subdirectories are created).
+
+3. **`html`**: Generates an HTML dashboard from existing parquet files using DuckDB for queries and Tera templates. Requires DuckDB CLI to be installed. This step is completely independent and only reads from `dist/*.parquet`.
 
 ### Key Modules
 
@@ -83,9 +106,11 @@ cargo run --release -- build
 
 3. **Artifact Filtering**: Supports glob patterns in `drivers.toml` to filter which artifacts are downloaded (e.g., "libduckdb-*" for DuckDB).
 
-4. **Concurrent Processing**: Uses tokio for async I/O and parallel processing of drivers (spawn_blocking for CPU-bound work in src/main.rs:521-534).
+4. **Concurrent Processing**: Uses tokio for async I/O and parallel processing of drivers (spawn_blocking for CPU-bound work during analysis).
 
-5. **Cache Management**: Downloaded artifacts are cached in `cache/{driver}/{tag}/` with SHA256 sidecar files for verification.
+5. **Cache Management**: Downloaded artifacts are cached in `cache/{driver}/{tag}/` with SHA256 sidecar files for verification. The cache directory is only modified by the `download` command; `analyze` reads from it but extracts to temporary directories.
+
+6. **Temporary File Management**: Library extraction uses system temp directories (`/tmp/adbc-*`) instead of cache subdirectories. These temp files are automatically cleaned up after symbol extraction completes.
 
 ## Configuration
 

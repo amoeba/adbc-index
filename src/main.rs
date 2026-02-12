@@ -14,10 +14,11 @@ mod symbols;
 
 use clap::{Parser, Subcommand};
 use error::Result;
+use indicatif::ProgressBar;
 use models::ReleaseRecord;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tera::{Tera, Context};
+use tera::{Context, Tera};
 
 /// Context holding clients for accessing GitHub and PyPI APIs
 struct ClientContext {
@@ -40,8 +41,8 @@ enum Commands {
         /// Optional driver name to download (downloads all drivers if not specified)
         driver: Option<String>,
     },
-    /// Download releases, analyze cache, and generate HTML dashboard
-    Build,
+    /// Analyze downloaded artifacts and generate parquet reports
+    Analyze,
     /// Generate HTML dashboard from existing parquet files
     Html,
 }
@@ -52,7 +53,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Download { driver } => download(driver).await,
-        Commands::Build => build().await,
+        Commands::Analyze => analyze().await,
         Commands::Html => html().await,
     }
 }
@@ -74,7 +75,10 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
     let gh_client = github::GitHubClient::new(Some(github_token.clone()))?;
     match gh_client.check_rate_limit().await {
         Ok(rate_limit) => {
-            eprintln!("✓ GitHub token verified. Rate limit: {}/{}", rate_limit.remaining, rate_limit.limit);
+            eprintln!(
+                "✓ GitHub token verified. Rate limit: {}/{}",
+                rate_limit.remaining, rate_limit.limit
+            );
         }
         Err(e) => {
             eprintln!("⚠️  Warning: GitHub token may be invalid: {}", e);
@@ -89,9 +93,10 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
     if let Some(ref driver_name) = driver_filter {
         drivers.retain(|d| d.name == *driver_name);
         if drivers.is_empty() {
-            return Err(error::AdbcIndexError::Config(
-                format!("Driver '{}' not found in configuration", driver_name)
-            ));
+            return Err(error::AdbcIndexError::Config(format!(
+                "Driver '{}' not found in configuration",
+                driver_name
+            )));
         }
     }
 
@@ -128,10 +133,10 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                 }
                 gh_client.fetch_releases(owner, repo).await
             }
-            models::DriverSource::PyPI { package } => {
-                pypi_client.fetch_releases(package).await
-                    .map(|pypi_releases| pypi::pypi_to_github_releases(pypi_releases, package))
-            }
+            models::DriverSource::PyPI { package } => pypi_client
+                .fetch_releases(package)
+                .await
+                .map(|pypi_releases| pypi::pypi_to_github_releases(pypi_releases, package)),
         };
 
         if std::env::var("DEBUG").is_ok() {
@@ -211,11 +216,12 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                             // Use API URL instead of browser_download_url for tags with slashes
                             // GitHub has a bug where browser_download_url doesn't work for tags with /
                             // The API url works: needs Accept: application/octet-stream header
-                            let (download_url, url_type) = if tag.contains('/') && asset.url.is_some() {
-                                (asset.url.clone().unwrap(), "API")
-                            } else {
-                                (asset.browser_download_url.clone(), "direct")
-                            };
+                            let (download_url, url_type) =
+                                if tag.contains('/') && asset.url.is_some() {
+                                    (asset.url.clone().unwrap(), "API")
+                                } else {
+                                    (asset.browser_download_url.clone(), "direct")
+                                };
 
                             if std::env::var("DEBUG").is_ok() {
                                 eprintln!("DEBUG:   URL type: {} for {}", url_type, asset.name);
@@ -234,12 +240,16 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                 }
 
                 if std::env::var("DEBUG").is_ok() {
-                    eprintln!("DEBUG: Finishing driver progress: {} new, {} cached", driver_new, driver_cached);
+                    eprintln!(
+                        "DEBUG: Finishing driver progress: {} new, {} cached",
+                        driver_new, driver_cached
+                    );
                 }
-                driver_progress.finish_with_message(format!("{} new, {} cached", driver_new, driver_cached));
+                driver_progress
+                    .finish_with_message(format!("{} new, {} cached", driver_new, driver_cached));
             }
             Err(e) => {
-                    eprintln!("  ⚠️  Download error: {}", e);
+                eprintln!("  ⚠️  Download error: {}", e);
                 driver_progress.finish_with_message(format!("Error: {}", e));
                 driver_fetch_errors += 1;
             }
@@ -258,16 +268,25 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
     // Fail if any driver failed to fetch
     if driver_fetch_errors > 0 {
         progress.finish_with_message("Failed");
-        return Err(error::AdbcIndexError::Config(
-            format!("Failed to fetch releases from {} driver(s)", driver_fetch_errors)
-        ));
+        return Err(error::AdbcIndexError::Config(format!(
+            "Failed to fetch releases from {} driver(s)",
+            driver_fetch_errors
+        )));
     }
 
     if std::env::var("DEBUG").is_ok() {
-        eprintln!("DEBUG: Finishing main progress: {} cached, {} to download", cached_count, download_tasks.len());
+        eprintln!(
+            "DEBUG: Finishing main progress: {} cached, {} to download",
+            cached_count,
+            download_tasks.len()
+        );
     }
 
-    progress.finish_with_message(&format!("{} cached, {} to download", cached_count, download_tasks.len()));
+    progress.finish_with_message(&format!(
+        "{} cached, {} to download",
+        cached_count,
+        download_tasks.len()
+    ));
 
     if std::env::var("DEBUG").is_ok() {
         eprintln!("DEBUG: Progress finished");
@@ -275,16 +294,16 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
     // Download artifacts
     if !download_tasks.is_empty() {
-        let download_progress = progress::ProgressTracker::new(download_tasks.len() as u64, "Download");
+        let download_progress =
+            progress::ProgressTracker::new(download_tasks.len() as u64, "Download");
         download_progress.set_message("Downloading artifacts");
 
-        let download_manager =
-            download::DownloadManager::with_progress(
-                cache_dir.clone(),
-                concurrent_downloads,
-                download_progress.multi(),
-                Some(github_token.clone())
-            )?;
+        let download_manager = download::DownloadManager::with_progress(
+            cache_dir.clone(),
+            concurrent_downloads,
+            download_progress.multi(),
+            Some(github_token.clone()),
+        )?;
 
         let results = download_manager.download_all(download_tasks).await;
 
@@ -306,217 +325,32 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
         }
 
         if error_count > 0 {
-            download_progress.finish_with_message(&format!("{} downloaded, {} errors", success_count, error_count));
+            download_progress.finish_with_message(&format!(
+                "{} downloaded, {} errors",
+                success_count, error_count
+            ));
             return Err(error::AdbcIndexError::Download {
                 url: "multiple".to_string(),
                 reason: format!("{} artifact(s) failed", error_count),
             });
         } else {
-            download_progress.finish_with_message(&format!("{} artifacts downloaded", success_count));
+            download_progress
+                .finish_with_message(&format!("{} artifacts downloaded", success_count));
         }
     }
 
     Ok(())
 }
 
-async fn build() -> Result<()> {
-    let build_progress = progress::ProgressTracker::new(3, "Build");
-
-    // Step 1: Download releases
-    build_progress.set_message("Step 1/3: Downloading releases");
-    download(None).await?;
-    build_progress.inc(1);
-
-    // Step 2: Generate parquet reports
-    build_progress.set_message("Step 2/3: Analyzing and generating reports");
-    report().await?;
-    build_progress.inc(1);
-
-    // Step 3: Generate HTML dashboard
-    build_progress.set_message("Step 3/3: Generating HTML dashboard");
-    html().await?;
-    build_progress.inc(1);
-
-    build_progress.finish_with_message("Build complete");
-
-    Ok(())
-}
-
-
-/// Result of processing a single driver
-struct DriverProcessResult {
-    library_records: Vec<models::LibraryRecord>,
-    symbol_records: Vec<models::SymbolRecord>,
-    release_data: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, std::collections::HashSet<String>, std::collections::HashSet<String>))>,
-    driver_name: String,
-    repo_owner: String,
-    repo_name: String,
-    library_count: usize,
-}
-
-/// Process a single driver and return its results
-async fn process_driver(
-    ctx: Arc<ClientContext>,
-    driver: models::DriverConfig,
-    cache_dir: PathBuf,
-    symbol_filter: symbols::SymbolFilter,
-) -> Result<DriverProcessResult> {
-    use std::collections::HashSet;
-    use models::{LibraryRecord, SymbolRecord};
-
-    let mut library_records = Vec::new();
-    let mut symbol_records = Vec::new();
-    let mut release_data_vec: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>))> = Vec::new();
-    let mut library_count = 0;
-
-    // Fetch releases based on source type
-    let mut releases = match &driver.source {
-        models::DriverSource::GitHub { owner, repo } => {
-            ctx.gh_client.fetch_releases(owner, repo).await?
-        }
-        models::DriverSource::PyPI { package } => {
-            let pypi_releases = ctx.pypi_client.fetch_releases(package).await?;
-            pypi::pypi_to_github_releases(pypi_releases, package)
-        }
-    };
-
-    // Filter releases by version requirement if specified
-    if let Some(ref version_req) = driver.version_req {
-        releases.retain(|release| {
-            if let Some(version_str) = models::ReleaseRecord::parse_version(&release.tag_name) {
-                if let Ok(version) = semver::Version::parse(&version_str) {
-                    return version_req.matches(&version);
-                }
-            }
-            true
-        });
-    }
-
-    for release in &releases {
-        let release_url = release.html_url.clone();
-        let tag = release.tag_name.clone();
-        let version = models::ReleaseRecord::parse_version(&tag);
-        let published_date = release
-            .published_at
-            .unwrap_or_else(|| chrono::Utc::now());
-
-        for asset in &release.assets {
-            // Parse artifact metadata
-            let artifact_meta = artifact_parser::parse_artifact(&asset.name);
-
-            // Skip non-driver artifacts (docs, configs, etc.)
-            if !is_driver_artifact(&artifact_meta.file_format) {
-                continue;
-            }
-
-            // Extract archive and find shared library
-            let library_info = extract_and_find_library(
-                &cache_dir,
-                &driver.name,
-                &tag,
-                &asset.name,
-            );
-
-            // Only process if we found a library
-            if let Some(lib_info) = library_info {
-                if let (Some(os), Some(arch)) = (&artifact_meta.os, &artifact_meta.arch) {
-                    // Add to library records
-                    library_records.push(LibraryRecord {
-                        name: driver.name.clone(),
-                        release_tag: tag.clone(),
-                        version: version.clone(),
-                        published_date,
-                        os: os.clone(),
-                        arch: arch.clone(),
-                        library_name: lib_info.name.clone(),
-                        library_size_bytes: lib_info.size,
-                        library_sha256: lib_info.sha256.clone().unwrap_or_default(),
-                        artifact_name: asset.name.clone(),
-                        artifact_url: asset.browser_download_url.clone(),
-                    });
-
-                    // Extract symbols and analyze stubs in a single pass
-                    if let Some(ref lib_path) = lib_info.path {
-                        match symbols::extract_symbols_and_stubs(lib_path, &symbol_filter) {
-                            Ok((syms, stub_analyses)) => {
-                                // Build map of symbol -> stub analysis
-                                let stub_map: std::collections::HashMap<String, stub_detector::StubAnalysis> =
-                                    stub_analyses.into_iter()
-                                        .map(|a| (a.symbol_name.clone(), a))
-                                        .collect();
-
-                                for (idx, symbol) in syms.into_iter().enumerate() {
-                                    let stub_info = stub_map.get(&symbol);
-
-                                    symbol_records.push(SymbolRecord {
-                                        name: driver.name.clone(),
-                                        release_tag: tag.clone(),
-                                        version: version.clone(),
-                                        os: os.clone(),
-                                        arch: arch.clone(),
-                                        library_name: lib_info.name.clone(),
-                                        symbol: symbol.clone(),
-                                        symbol_index: idx as i64,
-                                        is_stub: stub_info.map(|s| s.is_stub).unwrap_or(false),
-                                        constant_return: stub_info.and_then(|s| s.constant_return),
-                                        return_status: stub_info.and_then(|s| s.status_code.map(|c| c.name().to_string())),
-                                    });
-                                }
-                            }
-                            Err(_e) => {
-                                // Silently skip symbol extraction errors
-                            }
-                        }
-                    }
-
-                    // Track library count
-                    library_count += 1;
-
-                    // Aggregate release data
-                    let key = (driver.name.clone(), tag.clone());
-
-                    // Find existing entry or create new one
-                    if let Some(entry) = release_data_vec.iter_mut().find(|(k, _)| k == &key) {
-                        entry.1.3.insert(os.clone());
-                        entry.1.4.insert(arch.clone());
-                    } else {
-                        let mut os_set = HashSet::new();
-                        let mut arch_set = HashSet::new();
-                        os_set.insert(os.clone());
-                        arch_set.insert(arch.clone());
-                        release_data_vec.push((key, (version.clone(), published_date, release_url.clone(), os_set, arch_set)));
-                    }
-                }
-            }
-        }
-    }
-
-    // Extract repo owner and name based on source type
-    let (repo_owner, repo_name) = match &driver.source {
-        models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
-        models::DriverSource::PyPI { package } => ("pypi".to_string(), package.clone()),
-    };
-
-    Ok(DriverProcessResult {
-        library_records,
-        symbol_records,
-        release_data: release_data_vec,
-        driver_name: driver.name,
-        repo_owner,
-        repo_name,
-        library_count,
-    })
-}
-
-async fn report() -> Result<()> {
+async fn analyze() -> Result<()> {
     let config = PathBuf::from("drivers.toml");
     let cache_dir = PathBuf::from("cache");
 
     // Load configuration
     let drivers = config::load_config(&config)?;
 
-    use std::collections::{HashMap, HashSet};
     use models::DriverRecord;
+    use std::collections::{HashMap, HashSet};
 
     // Create GitHub and PyPI clients
     let github_token = std::env::var("GITHUB_TOKEN").ok();
@@ -538,11 +372,16 @@ async fn report() -> Result<()> {
         let ctx = Arc::clone(&ctx);
         let cache_dir_clone = cache_dir.clone();
         let symbol_filter_clone = symbol_filter.clone();
+        let progress_multi = analyze_progress.multi();
 
         let task = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(
-                process_driver(ctx, driver, cache_dir_clone, symbol_filter_clone)
-            )
+            tokio::runtime::Handle::current().block_on(process_driver(
+                ctx,
+                driver,
+                cache_dir_clone,
+                symbol_filter_clone,
+                progress_multi,
+            ))
         });
 
         tasks.push(task);
@@ -551,7 +390,16 @@ async fn report() -> Result<()> {
     // Collect results from all tasks
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
-    let mut release_data: HashMap<(String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>)> = HashMap::new();
+    let mut release_data: HashMap<
+        (String, String),
+        (
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+            String,
+            HashSet<String>,
+            HashSet<String>,
+        ),
+    > = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
     for task in tasks {
@@ -571,7 +419,7 @@ async fn report() -> Result<()> {
                 // Store driver stats
                 driver_stats.insert(
                     result.driver_name,
-                    (result.repo_owner, result.repo_name, result.library_count)
+                    (result.repo_owner, result.repo_name, result.library_count),
                 );
 
                 analyze_progress.inc(1);
@@ -580,7 +428,7 @@ async fn report() -> Result<()> {
                 analyze_progress.inc(1);
             }
             Err(e) => {
-                    eprintln!("  ⚠️  Download error: {}", e);
+                eprintln!("  ⚠️  Download error: {}", e);
                 analyze_progress.inc(1);
             }
         }
@@ -594,7 +442,15 @@ async fn report() -> Result<()> {
     ));
 
     // Calculate first and latest release for each driver
-    let mut driver_first_latest: HashMap<String, (chrono::DateTime<chrono::Utc>, Option<String>, chrono::DateTime<chrono::Utc>, Option<String>)> = HashMap::new();
+    let mut driver_first_latest: HashMap<
+        String,
+        (
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+        ),
+    > = HashMap::new();
 
     for ((name, _), (version, published_date, _, _, _)) in &release_data {
         driver_first_latest
@@ -609,7 +465,12 @@ async fn report() -> Result<()> {
                     *latest_ver = version.clone();
                 }
             })
-            .or_insert((*published_date, version.clone(), *published_date, version.clone()));
+            .or_insert((
+                *published_date,
+                version.clone(),
+                *published_date,
+                version.clone(),
+            ));
     }
 
     // Create driver records
@@ -623,11 +484,15 @@ async fn report() -> Result<()> {
                 .count() as i64;
 
             // Get first and latest release info
-            let (first_release_date, first_release_version, latest_release_date, latest_release_version) =
-                driver_first_latest.get(name).cloned().unwrap_or_else(|| {
-                    let now = chrono::Utc::now();
-                    (now, None, now, None)
-                });
+            let (
+                first_release_date,
+                first_release_version,
+                latest_release_date,
+                latest_release_version,
+            ) = driver_first_latest.get(name).cloned().unwrap_or_else(|| {
+                let now = chrono::Utc::now();
+                (now, None, now, None)
+            });
 
             DriverRecord {
                 name: name.clone(),
@@ -649,27 +514,31 @@ async fn report() -> Result<()> {
     // Convert release_data to ReleaseRecords
     let mut release_records: Vec<models::ReleaseRecord> = release_data
         .into_iter()
-        .map(|((name, release_tag), (version, published_date, release_url, os_set, arch_set))| {
-            let mut os: Vec<String> = os_set.into_iter().collect();
-            let mut arch: Vec<String> = arch_set.into_iter().collect();
-            os.sort();
-            arch.sort();
+        .map(
+            |((name, release_tag), (version, published_date, release_url, os_set, arch_set))| {
+                let mut os: Vec<String> = os_set.into_iter().collect();
+                let mut arch: Vec<String> = arch_set.into_iter().collect();
+                os.sort();
+                arch.sort();
 
-            models::ReleaseRecord {
-                name,
-                release_tag,
-                version,
-                published_date,
-                release_url,
-                os,
-                arch,
-            }
-        })
+                models::ReleaseRecord {
+                    name,
+                    release_tag,
+                    version,
+                    published_date,
+                    release_url,
+                    os,
+                    arch,
+                }
+            },
+        )
         .collect();
 
     // Sort by name, then by release_tag
     release_records.sort_by(|a, b| {
-        a.name.cmp(&b.name).then_with(|| a.release_tag.cmp(&b.release_tag))
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.release_tag.cmp(&b.release_tag))
     });
 
     // Create dist directory for output
@@ -720,6 +589,230 @@ async fn report() -> Result<()> {
     Ok(())
 }
 
+/// Result of processing a single driver
+struct DriverProcessResult {
+    library_records: Vec<models::LibraryRecord>,
+    symbol_records: Vec<models::SymbolRecord>,
+    release_data: Vec<(
+        (String, String),
+        (
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+            String,
+            std::collections::HashSet<String>,
+            std::collections::HashSet<String>,
+        ),
+    )>,
+    driver_name: String,
+    repo_owner: String,
+    repo_name: String,
+    library_count: usize,
+}
+
+/// Process a single driver and return its results
+async fn process_driver(
+    ctx: Arc<ClientContext>,
+    driver: models::DriverConfig,
+    cache_dir: PathBuf,
+    symbol_filter: symbols::SymbolFilter,
+    progress_multi: Arc<indicatif::MultiProgress>,
+) -> Result<DriverProcessResult> {
+    use models::{LibraryRecord, SymbolRecord};
+    use std::collections::HashSet;
+
+    let mut library_records = Vec::new();
+    let mut symbol_records = Vec::new();
+    let mut release_data_vec: Vec<(
+        (String, String),
+        (
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+            String,
+            HashSet<String>,
+            HashSet<String>,
+        ),
+    )> = Vec::new();
+    let mut library_count = 0;
+
+    // Create spinner for this driver
+    let driver_spinner = progress_multi.add(ProgressBar::new_spinner());
+    driver_spinner.set_style(
+        indicatif::ProgressStyle::default_spinner()
+            .template(&format!("  ├─ {{spinner}} {} {{msg}}", driver.name))
+            .unwrap(),
+    );
+    driver_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    driver_spinner.set_message("Fetching releases");
+
+    // Fetch releases based on source type
+    let mut releases = match &driver.source {
+        models::DriverSource::GitHub { owner, repo } => {
+            ctx.gh_client.fetch_releases(owner, repo).await?
+        }
+        models::DriverSource::PyPI { package } => {
+            let pypi_releases = ctx.pypi_client.fetch_releases(package).await?;
+            pypi::pypi_to_github_releases(pypi_releases, package)
+        }
+    };
+
+    // Filter releases by version requirement if specified
+    if let Some(ref version_req) = driver.version_req {
+        releases.retain(|release| {
+            if let Some(version_str) = models::ReleaseRecord::parse_version(&release.tag_name) {
+                if let Ok(version) = semver::Version::parse(&version_str) {
+                    return version_req.matches(&version);
+                }
+            }
+            true
+        });
+    }
+
+    driver_spinner.set_message(format!("Processing {} releases", releases.len()));
+
+    for (release_idx, release) in releases.iter().enumerate() {
+        let release_url = release.html_url.clone();
+        let tag = release.tag_name.clone();
+        let version = models::ReleaseRecord::parse_version(&tag);
+        let published_date = release.published_at.unwrap_or_else(chrono::Utc::now);
+
+        driver_spinner.set_message(format!(
+            "Processing release {}/{}: {}",
+            release_idx + 1,
+            releases.len(),
+            tag
+        ));
+
+        for asset in &release.assets {
+            // Parse artifact metadata
+            let artifact_meta = artifact_parser::parse_artifact(&asset.name);
+
+            // Skip non-driver artifacts (docs, configs, etc.)
+            if !is_driver_artifact(&artifact_meta.file_format) {
+                continue;
+            }
+
+            // Extract archive and find shared library
+            let library_info =
+                extract_and_find_library(&cache_dir, &driver.name, &tag, &asset.name);
+
+            // Only process if we found a library
+            if let Some(lib_info) = library_info {
+                if let (Some(os), Some(arch)) = (&artifact_meta.os, &artifact_meta.arch) {
+                    // Add to library records
+                    library_records.push(LibraryRecord {
+                        name: driver.name.clone(),
+                        release_tag: tag.clone(),
+                        version: version.clone(),
+                        published_date,
+                        os: os.clone(),
+                        arch: arch.clone(),
+                        library_name: lib_info.name.clone(),
+                        library_size_bytes: lib_info.size,
+                        library_sha256: lib_info.sha256.clone().unwrap_or_default(),
+                        artifact_name: asset.name.clone(),
+                        artifact_url: asset.browser_download_url.clone(),
+                    });
+
+                    // Extract symbols and analyze stubs in a single pass
+                    if let Some(ref lib_path) = lib_info.path {
+                        match symbols::extract_symbols_and_stubs(lib_path, &symbol_filter) {
+                            Ok((syms, stub_analyses)) => {
+                                // Build map of symbol -> stub analysis
+                                let stub_map: std::collections::HashMap<
+                                    String,
+                                    stub_detector::StubAnalysis,
+                                > = stub_analyses
+                                    .into_iter()
+                                    .map(|a| (a.symbol_name.clone(), a))
+                                    .collect();
+
+                                for (idx, symbol) in syms.into_iter().enumerate() {
+                                    let stub_info = stub_map.get(&symbol);
+
+                                    symbol_records.push(SymbolRecord {
+                                        name: driver.name.clone(),
+                                        release_tag: tag.clone(),
+                                        version: version.clone(),
+                                        os: os.clone(),
+                                        arch: arch.clone(),
+                                        library_name: lib_info.name.clone(),
+                                        symbol: symbol.clone(),
+                                        symbol_index: idx as i64,
+                                        is_stub: stub_info.map(|s| s.is_stub).unwrap_or(false),
+                                        constant_return: stub_info.and_then(|s| s.constant_return),
+                                        return_status: stub_info.and_then(|s| {
+                                            s.status_code.map(|c| c.name().to_string())
+                                        }),
+                                    });
+                                }
+                            }
+                            Err(_e) => {
+                                // Silently skip symbol extraction errors
+                            }
+                        }
+
+                        // Clean up temp file after symbol extraction
+                        let _ = std::fs::remove_file(lib_path);
+                        // Also try to clean up the temp directory (will succeed if empty)
+                        if let Some(parent) = lib_path.parent() {
+                            let _ = std::fs::remove_dir(parent);
+                        }
+                    }
+
+                    // Track library count
+                    library_count += 1;
+
+                    // Aggregate release data
+                    let key = (driver.name.clone(), tag.clone());
+
+                    // Find existing entry or create new one
+                    if let Some(entry) = release_data_vec.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 .3.insert(os.clone());
+                        entry.1 .4.insert(arch.clone());
+                    } else {
+                        let mut os_set = HashSet::new();
+                        let mut arch_set = HashSet::new();
+                        os_set.insert(os.clone());
+                        arch_set.insert(arch.clone());
+                        release_data_vec.push((
+                            key,
+                            (
+                                version.clone(),
+                                published_date,
+                                release_url.clone(),
+                                os_set,
+                                arch_set,
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Extract repo owner and name based on source type
+    let (repo_owner, repo_name) = match &driver.source {
+        models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
+        models::DriverSource::PyPI { package } => ("pypi".to_string(), package.clone()),
+    };
+
+    driver_spinner.finish_with_message(format!(
+        "{} libraries, {} symbols",
+        library_count,
+        symbol_records.len()
+    ));
+
+    Ok(DriverProcessResult {
+        library_records,
+        symbol_records,
+        release_data: release_data_vec,
+        driver_name: driver.name,
+        repo_owner,
+        repo_name,
+        library_count,
+    })
+}
+
 /// Information about an extracted shared library
 #[derive(Debug, Clone)]
 struct LibraryInfo {
@@ -731,7 +824,7 @@ struct LibraryInfo {
 
 /// Extract archive and find the shared library inside
 fn extract_and_find_library(
-    cache_dir: &PathBuf,
+    cache_dir: &Path,
     driver_name: &str,
     release_tag: &str,
     artifact_name: &str,
@@ -753,11 +846,15 @@ fn extract_and_find_library(
         return None;
     }
 
-    // Create temp directory for extracted libraries
-    let extract_dir = cache_dir
-        .join(driver_name)
-        .join(&sanitized_tag)
-        .join("extracted");
+    // Create unique temp directory for extracted libraries
+    let temp_base = std::env::temp_dir();
+    let unique_id = format!(
+        "adbc-{}-{}-{}",
+        driver_name,
+        sanitized_tag,
+        std::process::id()
+    );
+    let extract_dir = temp_base.join(unique_id);
     std::fs::create_dir_all(&extract_dir).ok()?;
 
     // Determine archive type and extract
@@ -773,7 +870,10 @@ fn extract_and_find_library(
             let filename = path.file_name()?.to_str()?.to_string();
 
             // Check if this is a shared library
-            if filename.ends_with(".so") || filename.ends_with(".dylib") || filename.ends_with(".dll") {
+            if filename.ends_with(".so")
+                || filename.ends_with(".dylib")
+                || filename.ends_with(".dll")
+            {
                 let size = entry.size() as i64;
 
                 // Extract library to temp directory
@@ -808,10 +908,13 @@ fn extract_and_find_library(
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).ok()?;
-            let filename = file.name().split('/').last()?.to_string();
+            let filename = file.name().split('/').next_back()?.to_string();
 
             // Check if this is a shared library
-            if filename.ends_with(".so") || filename.ends_with(".dylib") || filename.ends_with(".dll") {
+            if filename.ends_with(".so")
+                || filename.ends_with(".dylib")
+                || filename.ends_with(".dll")
+            {
                 let size = file.size() as i64;
 
                 // Extract library to temp directory
@@ -884,9 +987,10 @@ async fn html() -> Result<()> {
             .output()?;
 
         if !output.status.success() {
-            return Err(error::AdbcIndexError::Config(
-                format!("DuckDB query failed: {}", String::from_utf8_lossy(&output.stderr))
-            ));
+            return Err(error::AdbcIndexError::Config(format!(
+                "DuckDB query failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -900,7 +1004,11 @@ async fn html() -> Result<()> {
     let output_file = output_dir.join("index.html");
 
     // Check if parquet files exist
-    if !drivers_path.exists() || !releases_path.exists() || !libraries_path.exists() || !symbols_path.exists() {
+    if !drivers_path.exists()
+        || !releases_path.exists()
+        || !libraries_path.exists()
+        || !symbols_path.exists()
+    {
         return Err(error::AdbcIndexError::Config(
             "Parquet files not found. Run 'adbc-index build' first.".to_string(),
         ));
@@ -933,8 +1041,10 @@ async fn html() -> Result<()> {
     // Generate charts
     let timeline_svg = svg::generate_driver_timeline_svg(&timeline_csv);
     let releases_chart_svg = svg::generate_bar_chart(&releases_chart_csv, "Releases per Driver");
-    let libraries_chart_svg = svg::generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
-    let symbols_chart_svg = svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
+    let libraries_chart_svg =
+        svg::generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
+    let symbols_chart_svg =
+        svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
 
     // Get file sizes for download links
     let drivers_size = csv_utils::format_file_size(std::fs::metadata(&drivers_path)?.len());
@@ -946,10 +1056,11 @@ async fn html() -> Result<()> {
     let tera = match Tera::new("templates/**/*.tera") {
         Ok(t) => t,
         Err(e) => {
-                    eprintln!("  ⚠️  Download error: {}", e);
-            return Err(error::AdbcIndexError::Config(
-                format!("Template parsing error: {}", e)
-            ));
+            eprintln!("  ⚠️  Download error: {}", e);
+            return Err(error::AdbcIndexError::Config(format!(
+                "Template parsing error: {}",
+                e
+            )));
         }
     };
 
@@ -968,10 +1079,11 @@ async fn html() -> Result<()> {
     let html = match tera.render("index.html.tera", &context) {
         Ok(html) => html,
         Err(e) => {
-                    eprintln!("  ⚠️  Download error: {}", e);
-            return Err(error::AdbcIndexError::Config(
-                format!("Template rendering error: {}", e)
-            ));
+            eprintln!("  ⚠️  Download error: {}", e);
+            return Err(error::AdbcIndexError::Config(format!(
+                "Template rendering error: {}",
+                e
+            )));
         }
     };
 
@@ -984,5 +1096,3 @@ async fn html() -> Result<()> {
 
     Ok(())
 }
-
-

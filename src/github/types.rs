@@ -15,7 +15,7 @@ pub struct Asset {
     pub name: String,
     pub browser_download_url: String,
     #[serde(default)]
-    pub url: Option<String>,  // API URL that works for tags with slashes
+    pub url: Option<String>, // API URL that works for tags with slashes
     pub size: i64,
     #[serde(default)]
     pub download_count: i64,

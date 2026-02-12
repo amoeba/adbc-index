@@ -59,11 +59,7 @@ impl LibrariesWriter {
     }
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
-        let names: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.name.as_str()))
-            .collect();
+        let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
 
         let release_tags: StringArray = self
             .buffer
@@ -71,30 +67,19 @@ impl LibrariesWriter {
             .map(|r| Some(r.release_tag.as_str()))
             .collect();
 
-        let versions: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| r.version.as_deref())
-            .collect();
+        let versions: StringArray = self.buffer.iter().map(|r| r.version.as_deref()).collect();
 
         let published_dates = TimestampMillisecondArray::from(
             self.buffer
                 .iter()
                 .map(|r| Some(r.published_date.timestamp_millis()))
-                .collect::<Vec<_>>()
-        ).with_timezone("UTC");
+                .collect::<Vec<_>>(),
+        )
+        .with_timezone("UTC");
 
-        let os: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.os.as_str()))
-            .collect();
+        let os: StringArray = self.buffer.iter().map(|r| Some(r.os.as_str())).collect();
 
-        let arch: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.arch.as_str()))
-            .collect();
+        let arch: StringArray = self.buffer.iter().map(|r| Some(r.arch.as_str())).collect();
 
         let library_names: StringArray = self
             .buffer

@@ -21,7 +21,10 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
                 .or_else(|_| NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S"));
 
             if let Ok(naive_dt) = dt_result {
-                let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc);
+                let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                    naive_dt,
+                    chrono::Utc,
+                );
                 data_points.push((dt, _name.clone()));
             }
         }
@@ -91,19 +94,25 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
 
     let mut svg = String::new();
     svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
-    svg.push_str("\n");
+    svg.push('\n');
 
     // Axes
     svg.push_str(&format!(
         "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#1e3a5f\" stroke-width=\"1\"/>",
-        margin_left, margin_top + plot_height, margin_left + plot_width, margin_top + plot_height
+        margin_left,
+        margin_top + plot_height,
+        margin_left + plot_width,
+        margin_top + plot_height
     ));
-    svg.push_str("\n");
+    svg.push('\n');
     svg.push_str(&format!(
         "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#1e3a5f\" stroke-width=\"1\"/>",
-        margin_left, margin_top, margin_left, margin_top + plot_height
+        margin_left,
+        margin_top,
+        margin_left,
+        margin_top + plot_height
     ));
-    svg.push_str("\n");
+    svg.push('\n');
 
     // Y-axis ticks and grid
     let y_tick_count = 5;
@@ -117,7 +126,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
                 "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#1a2332\" stroke-width=\"0.5\" stroke-dasharray=\"2,2\"/>",
                 margin_left, y, margin_left + plot_width, y
             ));
-            svg.push_str("\n");
+            svg.push('\n');
         }
 
         // Tick label
@@ -125,7 +134,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
             "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#90caf9\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
             margin_left - 8.0, y, tick_value
         ));
-        svg.push_str("\n");
+        svg.push('\n');
     }
 
     // X-axis ticks
@@ -140,28 +149,36 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
             "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" text-anchor=\"end\" transform=\"rotate(-45, {}, {})\" font-family=\"JetBrains Mono, monospace\">{}</text>",
             x, margin_top + plot_height + 10.0, x, margin_top + plot_height + 10.0, date_label
         ));
-        svg.push_str("\n");
+        svg.push('\n');
     }
 
     // Plot area fill
     let mut area_points = format!("{},{} ", margin_left, margin_top + plot_height);
     for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range) * plot_width);
+        let x = margin_left
+            + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range)
+                * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         area_points.push_str(&format!("{},{} ", x, y));
     }
-    area_points.push_str(&format!("{},{}", margin_left + plot_width, margin_top + plot_height));
+    area_points.push_str(&format!(
+        "{},{}",
+        margin_left + plot_width,
+        margin_top + plot_height
+    ));
 
     svg.push_str(&format!(
         "<polygon points=\"{}\" fill=\"rgba(0, 212, 255, 0.1)\" stroke=\"none\"/>",
         area_points.trim()
     ));
-    svg.push_str("\n");
+    svg.push('\n');
 
     // Plot line
     let mut polyline_points = String::new();
     for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range) * plot_width);
+        let x = margin_left
+            + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range)
+                * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         polyline_points.push_str(&format!("{},{} ", x, y));
     }
@@ -170,17 +187,19 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
         "<polyline points=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"2\"/>",
         polyline_points.trim()
     ));
-    svg.push_str("\n");
+    svg.push('\n');
 
     // Plot points
     for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range) * plot_width);
+        let x = margin_left
+            + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range)
+                * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         svg.push_str(&format!(
             "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"#00d4ff\"/>",
             x, y
         ));
-        svg.push_str("\n");
+        svg.push('\n');
     }
 
     svg.push_str("</svg>\n");
@@ -237,7 +256,7 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
 
     let mut svg = String::new();
     svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
-    svg.push_str("\n");
+    svg.push('\n');
 
     // Draw bars
     for (i, (name, value)) in data.iter().enumerate() {
@@ -250,28 +269,28 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#1a2332\" opacity=\"0.3\"/>",
             margin_left, y, plot_width, bar_height
         ));
-        svg.push_str("\n");
+        svg.push('\n');
 
         // Bar
         svg.push_str(&format!(
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#barGradient)\"/>",
             margin_left, y, bar_width, bar_height
         ));
-        svg.push_str("\n");
+        svg.push('\n');
 
         // Bar border
         svg.push_str(&format!(
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"1\"/>",
             margin_left, y, bar_width, bar_height
         ));
-        svg.push_str("\n");
+        svg.push('\n');
 
         // Label
         svg.push_str(&format!(
             "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>",
             margin_left - 8.0, y + bar_height / 2.0, name
         ));
-        svg.push_str("\n");
+        svg.push('\n');
 
         // Value
         let value_text = if is_bytes {
@@ -283,16 +302,17 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
             "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
             margin_left + bar_width + 8.0, y + bar_height / 2.0, value_text
         ));
-        svg.push_str("\n");
+        svg.push('\n');
     }
 
     // Add gradient definition
-    svg.insert_str(svg.find("<rect").unwrap(), &format!(
+    svg.insert_str(
+        svg.find("<rect").unwrap(),
         "<defs><linearGradient id=\"barGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
          <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:1\" />\
          <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:1\" />\
-         </linearGradient></defs>"
-    ));
+         </linearGradient></defs>",
+    );
 
     svg.push_str("</svg>\n");
     svg

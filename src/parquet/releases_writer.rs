@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::models::ReleaseRecord;
 use crate::parquet::releases_schema::create_releases_schema;
-use arrow::array::{ArrayRef, ListArray, StringArray, TimestampMillisecondArray};
+use arrow::array::{ArrayRef, StringArray, TimestampMillisecondArray};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -59,11 +59,7 @@ impl ReleasesWriter {
     }
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
-        let names: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.name.as_str()))
-            .collect();
+        let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
 
         let release_tags: StringArray = self
             .buffer
@@ -71,18 +67,15 @@ impl ReleasesWriter {
             .map(|r| Some(r.release_tag.as_str()))
             .collect();
 
-        let versions: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| r.version.as_deref())
-            .collect();
+        let versions: StringArray = self.buffer.iter().map(|r| r.version.as_deref()).collect();
 
         let published_dates = TimestampMillisecondArray::from(
             self.buffer
                 .iter()
                 .map(|r| Some(r.published_date.timestamp_millis()))
-                .collect::<Vec<_>>()
-        ).with_timezone("UTC");
+                .collect::<Vec<_>>(),
+        )
+        .with_timezone("UTC");
 
         let release_urls: StringArray = self
             .buffer
@@ -91,7 +84,7 @@ impl ReleasesWriter {
             .collect();
 
         // Build os list array
-        use arrow::array::{GenericListArray, ListBuilder, StringBuilder};
+        use arrow::array::{ListBuilder, StringBuilder};
 
         let mut os_builder = ListBuilder::new(StringBuilder::new());
         for record in &self.buffer {

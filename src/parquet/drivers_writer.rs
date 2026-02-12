@@ -59,11 +59,7 @@ impl DriversWriter {
     }
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
-        let names: StringArray = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.name.as_str()))
-            .collect();
+        let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
 
         let repo_owners: StringArray = self
             .buffer
@@ -77,24 +73,19 @@ impl DriversWriter {
             .map(|r| Some(r.repo_name.as_str()))
             .collect();
 
-        let release_counts: Int64Array = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.release_count))
-            .collect();
+        let release_counts: Int64Array =
+            self.buffer.iter().map(|r| Some(r.release_count)).collect();
 
-        let library_counts: Int64Array = self
-            .buffer
-            .iter()
-            .map(|r| Some(r.library_count))
-            .collect();
+        let library_counts: Int64Array =
+            self.buffer.iter().map(|r| Some(r.library_count)).collect();
 
         let first_release_dates = TimestampMillisecondArray::from(
             self.buffer
                 .iter()
                 .map(|r| Some(r.first_release_date.timestamp_millis()))
-                .collect::<Vec<_>>()
-        ).with_timezone("UTC");
+                .collect::<Vec<_>>(),
+        )
+        .with_timezone("UTC");
 
         let first_release_versions: StringArray = self
             .buffer
@@ -106,8 +97,9 @@ impl DriversWriter {
             self.buffer
                 .iter()
                 .map(|r| Some(r.latest_release_date.timestamp_millis()))
-                .collect::<Vec<_>>()
-        ).with_timezone("UTC");
+                .collect::<Vec<_>>(),
+        )
+        .with_timezone("UTC");
 
         let latest_release_versions: StringArray = self
             .buffer

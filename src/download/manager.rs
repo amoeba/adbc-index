@@ -4,11 +4,11 @@ use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tar::Archive;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
-use std::sync::Arc;
 
 pub struct DownloadManager {
     client: reqwest::Client,
@@ -35,7 +35,11 @@ pub struct DownloadResult {
 }
 
 impl DownloadManager {
-    pub fn new(cache_dir: PathBuf, max_concurrent: usize, github_token: Option<String>) -> Result<Self> {
+    pub fn new(
+        cache_dir: PathBuf,
+        max_concurrent: usize,
+        github_token: Option<String>,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent("adbc-index")
             .build()?;
@@ -49,7 +53,12 @@ impl DownloadManager {
         })
     }
 
-    pub fn with_progress(cache_dir: PathBuf, max_concurrent: usize, multi_progress: Arc<MultiProgress>, github_token: Option<String>) -> Result<Self> {
+    pub fn with_progress(
+        cache_dir: PathBuf,
+        max_concurrent: usize,
+        multi_progress: Arc<MultiProgress>,
+        github_token: Option<String>,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent("adbc-index")
             .build()?;
@@ -69,9 +78,7 @@ impl DownloadManager {
 
         for task in tasks {
             let manager = self.clone_for_task();
-            let handle = tokio::spawn(async move {
-                manager.download_task(task).await
-            });
+            let handle = tokio::spawn(async move { manager.download_task(task).await });
             handles.push(handle);
         }
 
@@ -163,7 +170,9 @@ impl DownloadManager {
         }
 
         // Create progress bar
-        let pb = self.multi_progress.add(ProgressBar::new(task.expected_size as u64));
+        let pb = self
+            .multi_progress
+            .add(ProgressBar::new(task.expected_size as u64));
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("  ├─ {msg} [{bar:30}] {bytes}/{total_bytes}")
@@ -234,12 +243,12 @@ async fn extract_tar_gz(archive_path: &Path) -> Result<()> {
 
     tokio::task::spawn_blocking(move || {
         // Get the directory where the archive is located
-        let extract_dir = archive_path.parent().ok_or_else(|| {
-            AdbcIndexError::Download {
+        let extract_dir = archive_path
+            .parent()
+            .ok_or_else(|| AdbcIndexError::Download {
                 url: "".to_string(),
                 reason: "Invalid archive path".to_string(),
-            }
-        })?;
+            })?;
 
         // Open and extract the archive
         let file = std::fs::File::open(&archive_path)?;

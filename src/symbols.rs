@@ -32,7 +32,9 @@ impl SymbolFilter {
             return true;
         }
 
-        self.prefixes.iter().any(|prefix| symbol.starts_with(prefix))
+        self.prefixes
+            .iter()
+            .any(|prefix| symbol.starts_with(prefix))
     }
 }
 
@@ -44,10 +46,7 @@ impl Default for SymbolFilter {
 }
 
 /// Extract exported symbols from a shared library
-pub fn extract_symbols<P: AsRef<Path>>(
-    path: P,
-    filter: &SymbolFilter,
-) -> Result<Vec<String>> {
+pub fn extract_symbols<P: AsRef<Path>>(path: P, filter: &SymbolFilter) -> Result<Vec<String>> {
     use std::panic;
 
     let path = path.as_ref();
@@ -60,9 +59,11 @@ pub fn extract_symbols<P: AsRef<Path>>(
 
         // Limit buffer size to prevent memory issues (100MB max)
         if buffer.len() > 100 * 1024 * 1024 {
-            return Err(crate::error::AdbcIndexError::Config(
-                format!("Binary file too large: {} ({} bytes)", path.display(), buffer.len())
-            ));
+            return Err(crate::error::AdbcIndexError::Config(format!(
+                "Binary file too large: {} ({} bytes)",
+                path.display(),
+                buffer.len()
+            )));
         }
 
         let symbols = match Object::parse(&buffer)? {
@@ -70,9 +71,10 @@ pub fn extract_symbols<P: AsRef<Path>>(
             Object::PE(pe) => extract_pe_symbols(&pe, filter),
             Object::Mach(mach) => extract_mach_symbols(&mach, filter),
             _ => {
-                return Err(crate::error::AdbcIndexError::Config(
-                    format!("Unsupported binary format: {}", path.display())
-                ));
+                return Err(crate::error::AdbcIndexError::Config(format!(
+                    "Unsupported binary format: {}",
+                    path.display()
+                )));
             }
         };
 
@@ -83,9 +85,10 @@ pub fn extract_symbols<P: AsRef<Path>>(
     match result {
         Ok(Ok(symbols)) => Ok(symbols),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(crate::error::AdbcIndexError::Config(
-            format!("Panic occurred while parsing binary: {}", path.display())
-        )),
+        Err(_) => Err(crate::error::AdbcIndexError::Config(format!(
+            "Panic occurred while parsing binary: {}",
+            path.display()
+        ))),
     }
 }
 
@@ -100,10 +103,9 @@ fn extract_elf_symbols(elf: &Elf, filter: &SymbolFilter) -> Vec<String> {
             if sym.st_type() == goblin::elf::sym::STT_FUNC
                 && (sym.st_bind() == goblin::elf::sym::STB_GLOBAL
                     || sym.st_bind() == goblin::elf::sym::STB_WEAK)
+                && filter.matches(name)
             {
-                if filter.matches(name) {
-                    symbols.push(name.to_string());
-                }
+                symbols.push(name.to_string());
             }
         }
     }
@@ -138,14 +140,12 @@ fn extract_mach_symbols(mach: &Mach, filter: &SymbolFilter) -> Vec<String> {
     match mach {
         Mach::Binary(macho) => {
             // Extract exported symbols from dynamic symbol table
-            for sym in macho.symbols() {
-                if let Ok((name, nlist)) = sym {
-                    // Check if it's an exported symbol (external linkage)
-                    if nlist.is_global() && !nlist.is_undefined() {
-                        let name = name.trim_start_matches('_'); // Remove leading underscore
-                        if filter.matches(name) {
-                            symbols.push(name.to_string());
-                        }
+            for (name, nlist) in macho.symbols().flatten() {
+                // Check if it's an exported symbol (external linkage)
+                if nlist.is_global() && !nlist.is_undefined() {
+                    let name = name.trim_start_matches('_'); // Remove leading underscore
+                    if filter.matches(name) {
+                        symbols.push(name.to_string());
                     }
                 }
             }
@@ -191,9 +191,10 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
             (symbols, stubs)
         }
         _ => {
-            return Err(crate::error::AdbcIndexError::Config(
-                format!("Unsupported binary format: {}", path.display())
-            ));
+            return Err(crate::error::AdbcIndexError::Config(format!(
+                "Unsupported binary format: {}",
+                path.display()
+            )));
         }
     };
 
@@ -223,10 +224,7 @@ mod tests {
 
     #[test]
     fn test_symbol_filter_custom_prefixes() {
-        let filter = SymbolFilter::new(vec![
-            "Adbc".to_string(),
-            "sqlite3_".to_string(),
-        ]);
+        let filter = SymbolFilter::new(vec!["Adbc".to_string(), "sqlite3_".to_string()]);
 
         assert!(filter.enabled);
 

@@ -231,9 +231,7 @@ fn strategy_platform_in_name(filename: &str) -> Option<ArtifactMetadata> {
     };
 
     // Try to extract version from any part
-    let version = base
-        .split(&['_', '-'][..])
-        .find_map(|part| extract_version(part));
+    let version = base.split(&['_', '-'][..]).find_map(extract_version);
 
     if os.is_some() || arch.is_some() {
         return Some(ArtifactMetadata {
@@ -328,7 +326,12 @@ fn extract_version(s: &str) -> Option<String> {
 /// Check if string looks like a version number
 fn is_version_like(s: &str) -> bool {
     // Must start with a digit
-    if !s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+    if !s
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
         return false;
     }
 
@@ -338,7 +341,8 @@ fn is_version_like(s: &str) -> bool {
     }
 
     // All characters should be digits, dots, or hyphens
-    s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+    s.chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
 }
 
 /// Split filename into base and extension

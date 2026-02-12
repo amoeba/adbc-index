@@ -35,15 +35,14 @@ impl DriverConfig {
                 // Simple prefix/suffix/contains matching
                 if pattern.starts_with('*') && pattern.ends_with('*') {
                     // *text* - contains
-                    let text = &pattern[1..pattern.len()-1];
+                    let text = &pattern[1..pattern.len() - 1];
                     filename.contains(text)
-                } else if pattern.starts_with('*') {
+                } else if let Some(suffix) = pattern.strip_prefix('*') {
                     // *suffix - ends with
-                    let suffix = &pattern[1..];
                     filename.ends_with(suffix)
                 } else if pattern.ends_with('*') {
                     // prefix* - starts with
-                    let prefix = &pattern[..pattern.len()-1];
+                    let prefix = &pattern[..pattern.len() - 1];
                     filename.starts_with(prefix)
                 } else {
                     // Exact match
@@ -160,8 +159,13 @@ impl ReleaseRecord {
             }
 
             // Check if this part looks like a version without 'v' prefix
-            if part.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-                && is_valid_version(part) {
+            if part
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+                && is_valid_version(part)
+            {
                 return part.to_string();
             }
         }
@@ -174,7 +178,12 @@ impl ReleaseRecord {
 /// Check if string looks like a valid semantic version
 fn is_valid_version(s: &str) -> bool {
     // Must start with a digit
-    if !s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+    if !s
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
         return false;
     }
 
@@ -209,31 +218,61 @@ mod tests {
 
     #[test]
     fn test_parse_simple_version() {
-        assert_eq!(ReleaseRecord::parse_version("v0.2.0"), Some("0.2.0".to_string()));
-        assert_eq!(ReleaseRecord::parse_version("v1.0.0"), Some("1.0.0".to_string()));
-        assert_eq!(ReleaseRecord::parse_version("0.1.2"), Some("0.1.2".to_string()));
+        assert_eq!(
+            ReleaseRecord::parse_version("v0.2.0"),
+            Some("0.2.0".to_string())
+        );
+        assert_eq!(
+            ReleaseRecord::parse_version("v1.0.0"),
+            Some("1.0.0".to_string())
+        );
+        assert_eq!(
+            ReleaseRecord::parse_version("0.1.2"),
+            Some("0.1.2".to_string())
+        );
     }
 
     #[test]
     fn test_parse_complex_tag() {
-        assert_eq!(ReleaseRecord::parse_version("go/v0.2.0"), Some("0.2.0".to_string()));
-        assert_eq!(ReleaseRecord::parse_version("python/v1.0.0"), Some("1.0.0".to_string()));
-        assert_eq!(ReleaseRecord::parse_version("java/driver/v2.3.4"), Some("2.3.4".to_string()));
+        assert_eq!(
+            ReleaseRecord::parse_version("go/v0.2.0"),
+            Some("0.2.0".to_string())
+        );
+        assert_eq!(
+            ReleaseRecord::parse_version("python/v1.0.0"),
+            Some("1.0.0".to_string())
+        );
+        assert_eq!(
+            ReleaseRecord::parse_version("java/driver/v2.3.4"),
+            Some("2.3.4".to_string())
+        );
     }
 
     #[test]
     fn test_parse_prerelease() {
-        assert_eq!(ReleaseRecord::parse_version("v1.0.0-beta"), Some("1.0.0-beta".to_string()));
-        assert_eq!(ReleaseRecord::parse_version("v1.0.0-rc.1"), Some("1.0.0-rc.1".to_string()));
+        assert_eq!(
+            ReleaseRecord::parse_version("v1.0.0-beta"),
+            Some("1.0.0-beta".to_string())
+        );
+        assert_eq!(
+            ReleaseRecord::parse_version("v1.0.0-rc.1"),
+            Some("1.0.0-rc.1".to_string())
+        );
     }
 
     #[test]
     fn test_sanitize_tag() {
         assert_eq!(ReleaseRecord::sanitize_tag_for_path("v0.2.0"), "0.2.0");
         assert_eq!(ReleaseRecord::sanitize_tag_for_path("go/v0.2.0"), "0.2.0");
-        assert_eq!(ReleaseRecord::sanitize_tag_for_path("a/b/c/v1.0.0"), "1.0.0");
+        assert_eq!(
+            ReleaseRecord::sanitize_tag_for_path("a/b/c/v1.0.0"),
+            "1.0.0"
+        );
         assert_eq!(ReleaseRecord::sanitize_tag_for_path("0.1.2"), "0.1.2");
-        assert_eq!(ReleaseRecord::sanitize_tag_for_path("python/1.5.0"), "1.5.0");
+        assert_eq!(
+            ReleaseRecord::sanitize_tag_for_path("python/1.5.0"),
+            "1.5.0"
+        );
     }
 
     #[test]

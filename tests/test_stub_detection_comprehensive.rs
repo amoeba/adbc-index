@@ -3,9 +3,18 @@ use adbc_index::stub_detector::{analyze_stubs, AdbcStatusCode};
 #[test]
 fn test_stub_detection_comprehensive() {
     let binaries = vec![
-        ("Linux ELF", "test_artifacts/tiniest-adbc-driver/tiny-driver-ubuntu-latest/libtiny.so"),
-        ("Windows PE", "test_artifacts/tiniest-adbc-driver/tiny-driver-windows-latest/tiny.dll"),
-        ("macOS Mach-O", "test_artifacts/tiniest-adbc-driver/tiny-driver-macos-latest/libtiny.dylib"),
+        (
+            "Linux ELF",
+            "test_artifacts/tiniest-adbc-driver/tiny-driver-ubuntu-latest/libtiny.so",
+        ),
+        (
+            "Windows PE",
+            "test_artifacts/tiniest-adbc-driver/tiny-driver-windows-latest/tiny.dll",
+        ),
+        (
+            "macOS Mach-O",
+            "test_artifacts/tiniest-adbc-driver/tiny-driver-macos-latest/libtiny.dylib",
+        ),
     ];
 
     // Expected stubs (return ADBC_STATUS_NOT_IMPLEMENTED = 2)
@@ -31,8 +40,8 @@ fn test_stub_detection_comprehensive() {
         println!("\n=== {} ===", name);
         println!("Path: {}\n", path);
 
-        let analyses = analyze_stubs(path)
-            .unwrap_or_else(|e| panic!("{} stub analysis failed: {}", name, e));
+        let analyses =
+            analyze_stubs(path).unwrap_or_else(|e| panic!("{} stub analysis failed: {}", name, e));
 
         println!("Found {} analyses", analyses.len());
 
@@ -41,20 +50,27 @@ fn test_stub_detection_comprehensive() {
         let mut detected_non_stubs = Vec::new();
 
         for analysis in &analyses {
-            println!("  {} - is_stub: {}, constant_return: {:?}, status: {:?}",
-                     analysis.symbol_name,
-                     analysis.is_stub,
-                     analysis.constant_return,
-                     analysis.status_code.map(|s| s.name()));
+            println!(
+                "  {} - is_stub: {}, constant_return: {:?}, status: {:?}",
+                analysis.symbol_name,
+                analysis.is_stub,
+                analysis.constant_return,
+                analysis.status_code.map(|s| s.name())
+            );
 
             if analysis.is_stub {
                 detected_stubs.push(analysis.symbol_name.clone());
-            } else if analysis.constant_return == Some(0) && analysis.status_code == Some(AdbcStatusCode::Ok) {
+            } else if analysis.constant_return == Some(0)
+                && analysis.status_code == Some(AdbcStatusCode::Ok)
+            {
                 detected_non_stubs.push(analysis.symbol_name.clone());
             }
         }
 
-        println!("\nStubs (returning NOT_IMPLEMENTED): {}", detected_stubs.len());
+        println!(
+            "\nStubs (returning NOT_IMPLEMENTED): {}",
+            detected_stubs.len()
+        );
         for stub in &detected_stubs {
             println!("  - {}", stub);
         }
