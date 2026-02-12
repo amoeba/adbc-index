@@ -112,20 +112,6 @@ pub struct SymbolRecord {
     pub return_status: Option<String>,
 }
 
-/// An info code record - one row per driver release with info codes
-#[derive(Debug, Clone)]
-pub struct InfoCodeRecord {
-    pub name: String,
-    pub release_tag: String,
-    pub version: Option<String>,
-    pub os: String,
-    pub arch: String,
-    pub library_name: String,
-    pub success: bool,
-    pub error_message: Option<String>,
-    pub info_codes: Option<String>, // JSON string containing all info codes
-}
-
 impl ReleaseRecord {
     /// Parse version from tag (handles complex tags like "go/v0.2.0")
     /// Returns version in format "0.1.2" (without 'v' prefix)

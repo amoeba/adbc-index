@@ -93,8 +93,7 @@ async function initDuckDB() {
     { name: 'drivers.parquet', id: 'drivers' },
     { name: 'releases.parquet', id: 'releases' },
     { name: 'libraries.parquet', id: 'libraries' },
-    { name: 'symbols.parquet', id: 'symbols' },
-    { name: 'info_codes.parquet', id: 'info_codes' }
+    { name: 'symbols.parquet', id: 'symbols' }
   ];
 
   for (const file of files) {
@@ -207,9 +206,6 @@ async function loadDriversTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 20,
-      onGridSizeChanged: (params) => {
-        params.api.sizeColumnsToFit();
-      }
     };
 
     // Destroy existing grid before creating new one
@@ -304,9 +300,6 @@ async function loadReleasesTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 50,
-      onGridSizeChanged: (params) => {
-        params.api.sizeColumnsToFit();
-      }
     };
 
     // Destroy existing grid before creating new one
@@ -397,9 +390,6 @@ async function loadLibrariesTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 50,
-      onGridSizeChanged: (params) => {
-        params.api.sizeColumnsToFit();
-      }
     };
 
     // Destroy existing grid before creating new one
@@ -486,9 +476,6 @@ async function loadSymbolsTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 100,
-      onGridSizeChanged: (params) => {
-        params.api.sizeColumnsToFit();
-      }
     };
 
     // Destroy existing grid before creating new one
@@ -524,124 +511,11 @@ async function runSymbolsQuery() {
   updateURL();
 }
 
-let getinfoGrid = null;
-
-async function loadGetinfoTable(customSQL) {
-  setTableStatus('getinfo', 'loading', 'Loading...');
-  hideQueryError('getinfo');
-
-  try {
-    const sql = customSQL || document.getElementById('getinfoQuery').value;
-    const data = await queryDuckDB(sql, 'getinfo');
-
-    if (!data || data.length === 0) {
-      setTableStatus('getinfo', 'error', 'No data');
-      showQueryError('getinfo', 'Query returned no results');
-      if (getinfoGrid) {
-        getinfoGrid.destroy();
-        getinfoGrid = null;
-      }
-      return;
-    }
-
-    // Dynamically create column definitions from the data
-    const columnDefs = Object.keys(data[0]).map(key => {
-      const colDef = {
-        field: key,
-        headerName: key,
-        filter: true,
-        sortable: true,
-        resizable: true,
-        tooltipValueGetter: (params) => params.value, // Show full value on hover
-      };
-
-      // Set column-specific widths and wrapping
-      if (key === 'error_message') {
-        colDef.flex = 2;
-        colDef.minWidth = 250;
-        colDef.wrapText = false;
-        colDef.autoHeight = false;
-      } else if (key === 'info_codes') {
-        colDef.flex = 3;
-        colDef.minWidth = 300;
-        colDef.wrapText = false;
-        colDef.autoHeight = false;
-      } else if (key === 'success') {
-        colDef.width = 80;
-        colDef.cellRenderer = (params) => {
-          // Handle null/undefined values
-          if (params.value === null || params.value === undefined) {
-            return '';
-          }
-          if (typeof params.value === 'boolean') {
-            return params.value ? '✓' : '✗';
-          }
-          return String(params.value);
-        };
-      } else if (key === 'library_name') {
-        colDef.flex = 1;
-        colDef.minWidth = 150;
-      } else {
-        colDef.flex = 1;
-        colDef.minWidth = 100;
-      }
-
-      return colDef;
-    });
-
-    const gridOptions = {
-      columnDefs: columnDefs,
-      rowData: data,
-      defaultColDef: {
-        resizable: true,
-        sortable: true,
-        filter: true,
-        wrapText: false,
-        autoHeight: false
-      },
-      pagination: true,
-      paginationPageSize: 100,
-      tooltipShowDelay: 200,
-      enableCellTextSelection: true,
-      ensureDomOrder: true,
-      onGridSizeChanged: (params) => {
-        params.api.sizeColumnsToFit();
-      }
-    };
-
-    // Destroy existing grid before creating new one
-    if (getinfoGrid) {
-      getinfoGrid.destroy();
-    }
-
-    getinfoGrid = agGrid.createGrid(document.getElementById('getinfoGrid'), gridOptions);
-
-    setTableStatus('getinfo', 'success', `${data.length} rows`);
-  } catch (err) {
-    console.error('Failed to load getinfo table:', err);
-    setTableStatus('getinfo', 'error', err.message);
-    showQueryError('getinfo', err.message);
-    if (getinfoGrid) {
-      getinfoGrid.destroy();
-      getinfoGrid = null;
-    }
-  }
-}
-
-async function runGetinfoQuery() {
-  console.log('Running getinfo query...');
-  const queryText = document.getElementById('getinfoQuery').value;
-  console.log('Query:', queryText);
-  await loadGetinfoTable();
-  updateURL();
-}
-
 // Expose query functions to global scope for inline onclick handlers
 window.runDriversQuery = runDriversQuery;
 window.runReleasesQuery = runReleasesQuery;
 window.runLibrariesQuery = runLibrariesQuery;
 window.runSymbolsQuery = runSymbolsQuery;
-window.runGetinfoQuery = runGetinfoQuery;
 
 async function init() {
   const loadingOverlay = document.getElementById('loadingOverlay');
@@ -725,13 +599,6 @@ async function init() {
       }
     });
 
-    document.getElementById('getinfoQuery').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        runGetinfoQuery();
-      }
-    });
-
   } catch (err) {
     console.error('Critical error during initialization:', err);
     updateLoadingStep('init-error', 'error', 'Initialization failed');
@@ -760,13 +627,12 @@ function updateURL() {
   }
 
   // Get all query values
-  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery', 'getinfoQuery'];
+  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery'];
   const defaultQueries = {
     'driversQuery': "SELECT * FROM read_parquet('drivers.parquet')",
     'releasesQuery': "SELECT * FROM read_parquet('releases.parquet')",
     'librariesQuery': "SELECT * FROM read_parquet('libraries.parquet')",
-    'symbolsQuery': "SELECT * FROM read_parquet('symbols.parquet')",
-    'getinfoQuery': "SELECT * FROM read_parquet('info_codes.parquet')"
+    'symbolsQuery': "SELECT * FROM read_parquet('symbols.parquet')"
   };
 
   queryIds.forEach(id => {
@@ -787,7 +653,7 @@ function restoreQueriesFromURL() {
   const params = new URLSearchParams(window.location.search);
 
   // Restore queries
-  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery', 'getinfoQuery'];
+  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery'];
   queryIds.forEach(id => {
     const value = params.get(id);
     if (value) {

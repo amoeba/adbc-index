@@ -4,7 +4,6 @@ mod csv_utils;
 mod download;
 mod error;
 mod github;
-mod info_codes;
 mod models;
 mod parquet;
 mod progress;
@@ -348,7 +347,6 @@ async fn build() -> Result<()> {
 struct DriverProcessResult {
     library_records: Vec<models::LibraryRecord>,
     symbol_records: Vec<models::SymbolRecord>,
-    info_code_records: Vec<models::InfoCodeRecord>,
     release_data: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, std::collections::HashSet<String>, std::collections::HashSet<String>))>,
     driver_name: String,
     repo_owner: String,
@@ -368,7 +366,6 @@ async fn process_driver(
 
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
-    let mut info_code_records = Vec::new();
     let mut release_data_vec: Vec<((String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>))> = Vec::new();
     let mut library_count = 0;
 
@@ -402,9 +399,6 @@ async fn process_driver(
         let published_date = release
             .published_at
             .unwrap_or_else(|| chrono::Utc::now());
-
-        // Track whether we found a macOS arm64 library for this release
-        let mut found_macos_arm64 = false;
 
         for asset in &release.assets {
             // Parse artifact metadata
@@ -473,26 +467,6 @@ async fn process_driver(
                                 // Silently skip symbol extraction errors
                             }
                         }
-
-                        // Extract info codes for macOS arm64 builds only
-                        // TEMPORARILY DISABLED: This loads and executes drivers, which can cause segfaults
-                        // for drivers with missing dependencies (e.g., Oracle requiring Oracle client libs)
-                        if os == "darwin" && arch == "arm64" {
-                            found_macos_arm64 = true;
-
-                            // Temporarily skip actual info code extraction
-                            info_code_records.push(models::InfoCodeRecord {
-                                name: driver.name.clone(),
-                                release_tag: tag.clone(),
-                                version: version.clone(),
-                                os: os.clone(),
-                                arch: arch.clone(),
-                                library_name: lib_info.name.clone(),
-                                success: false,
-                                error_message: Some("Info code extraction temporarily disabled".to_string()),
-                                info_codes: None,
-                            });
-                        }
                     }
 
                     // Track library count
@@ -515,21 +489,6 @@ async fn process_driver(
                 }
             }
         }
-
-        // If no macOS arm64 library was found for this release, create a failure record
-        if !found_macos_arm64 {
-            info_code_records.push(models::InfoCodeRecord {
-                name: driver.name.clone(),
-                release_tag: tag.clone(),
-                version: version.clone(),
-                os: "darwin".to_string(),
-                arch: "arm64".to_string(),
-                library_name: String::new(),
-                success: false,
-                error_message: Some("No macOS arm64 library found for this release".to_string()),
-                info_codes: None,
-            });
-        }
     }
 
     // Extract repo owner and name based on source type
@@ -541,7 +500,6 @@ async fn process_driver(
     Ok(DriverProcessResult {
         library_records,
         symbol_records,
-        info_code_records,
         release_data: release_data_vec,
         driver_name: driver.name,
         repo_owner,
@@ -593,7 +551,6 @@ async fn report() -> Result<()> {
     // Collect results from all tasks
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
-    let mut info_code_records = Vec::new();
     let mut release_data: HashMap<(String, String), (Option<String>, chrono::DateTime<chrono::Utc>, String, HashSet<String>, HashSet<String>)> = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
@@ -605,7 +562,6 @@ async fn report() -> Result<()> {
                 // Merge results
                 library_records.extend(result.library_records);
                 symbol_records.extend(result.symbol_records);
-                info_code_records.extend(result.info_code_records);
 
                 // Merge release data
                 for (key, value) in result.release_data {
@@ -720,7 +676,7 @@ async fn report() -> Result<()> {
     let dist_dir = PathBuf::from("dist");
     std::fs::create_dir_all(&dist_dir)?;
 
-    let write_progress = progress::ProgressTracker::new(5, "Write");
+    let write_progress = progress::ProgressTracker::new(4, "Write");
     write_progress.set_message("Writing parquet files");
 
     // Write drivers.parquet
@@ -757,15 +713,6 @@ async fn report() -> Result<()> {
         symbols_writer.add_record(record)?;
     }
     symbols_writer.close()?;
-    write_progress.inc(1);
-
-    // Write info_codes.parquet
-    let info_codes_output = dist_dir.join("info_codes.parquet");
-    let mut info_codes_writer = parquet::InfoCodesWriter::new(&info_codes_output)?;
-    for record in info_code_records {
-        info_codes_writer.add_record(record)?;
-    }
-    info_codes_writer.close()?;
     write_progress.inc(1);
 
     write_progress.finish_with_message("Parquet files written");
@@ -950,11 +897,10 @@ async fn html() -> Result<()> {
     let releases_path = output_dir.join("releases.parquet");
     let libraries_path = output_dir.join("libraries.parquet");
     let symbols_path = output_dir.join("symbols.parquet");
-    let info_codes_path = output_dir.join("info_codes.parquet");
     let output_file = output_dir.join("index.html");
 
     // Check if parquet files exist
-    if !drivers_path.exists() || !releases_path.exists() || !libraries_path.exists() || !symbols_path.exists() || !info_codes_path.exists() {
+    if !drivers_path.exists() || !releases_path.exists() || !libraries_path.exists() || !symbols_path.exists() {
         return Err(error::AdbcIndexError::Config(
             "Parquet files not found. Run 'adbc-index build' first.".to_string(),
         ));
@@ -982,11 +928,6 @@ async fn html() -> Result<()> {
         "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') GROUP BY name ORDER BY symbol_count DESC"
     )?;
 
-    // Query info code success rate per driver
-    let info_codes_chart_csv = query_duckdb(
-        "SELECT name, SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count, COUNT(*) as total_count FROM read_parquet('dist/info_codes.parquet') GROUP BY name ORDER BY success_count DESC"
-    )?;
-
     println!("🔨 Generating HTML...");
 
     // Generate charts
@@ -994,14 +935,12 @@ async fn html() -> Result<()> {
     let releases_chart_svg = svg::generate_bar_chart(&releases_chart_csv, "Releases per Driver");
     let libraries_chart_svg = svg::generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
     let symbols_chart_svg = svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
-    let info_codes_chart_svg = svg::generate_bar_chart(&info_codes_chart_csv, "GetInfo Success Rate per Driver");
 
     // Get file sizes for download links
     let drivers_size = csv_utils::format_file_size(std::fs::metadata(&drivers_path)?.len());
     let releases_size = csv_utils::format_file_size(std::fs::metadata(&releases_path)?.len());
     let libraries_size = csv_utils::format_file_size(std::fs::metadata(&libraries_path)?.len());
     let symbols_size = csv_utils::format_file_size(std::fs::metadata(&symbols_path)?.len());
-    let info_codes_size = csv_utils::format_file_size(std::fs::metadata(&info_codes_path)?.len());
 
     // Initialize Tera template engine
     let tera = match Tera::new("templates/**/*.tera") {
@@ -1020,12 +959,10 @@ async fn html() -> Result<()> {
     context.insert("releases_chart_svg", &releases_chart_svg);
     context.insert("libraries_chart_svg", &libraries_chart_svg);
     context.insert("symbols_chart_svg", &symbols_chart_svg);
-    context.insert("info_codes_chart_svg", &info_codes_chart_svg);
     context.insert("drivers_size", &drivers_size);
     context.insert("releases_size", &releases_size);
     context.insert("libraries_size", &libraries_size);
     context.insert("symbols_size", &symbols_size);
-    context.insert("info_codes_size", &info_codes_size);
 
     // Render template
     let html = match tera.render("index.html.tera", &context) {
