@@ -304,20 +304,24 @@ fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
 
 /// Disassemble x86/x64 function to detect constant return values using Capstone
 fn disassemble_x86_constant_return(bytes: &[u8]) -> Option<i32> {
+    use std::panic;
+
     if bytes.is_empty() {
         return None;
     }
 
-    // Create Capstone disassembler for x86-64
-    let cs = Capstone::new()
-        .x86()
-        .mode(arch::x86::ArchMode::Mode64)
-        .detail(true)
-        .build()
-        .ok()?;
+    // Catch panics from Capstone FFI calls
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        // Create Capstone disassembler for x86-64
+        let cs = Capstone::new()
+            .x86()
+            .mode(arch::x86::ArchMode::Mode64)
+            .detail(true)
+            .build()
+            .ok()?;
 
-    // Disassemble the function
-    let insns = cs.disasm_all(bytes, 0x0).ok()?;
+        // Disassemble the function
+        let insns = cs.disasm_all(bytes, 0x0).ok()?;
 
     // Look for pattern: mov to return register (eax/rax/al) followed by ret
     let mut last_mov_value: Option<i32> = None;
@@ -373,6 +377,10 @@ fn disassemble_x86_constant_return(bytes: &[u8]) -> Option<i32> {
     }
 
     None
+    }));
+
+    // If panic occurred or error, return None
+    result.ok().flatten()
 }
 
 /// Check if an x86 operand is a return register (eax, rax, or al)
@@ -402,20 +410,24 @@ fn is_same_x86_register(op1: &capstone::arch::ArchOperand, op2: &capstone::arch:
 
 /// Disassemble ARM64 function to detect constant return values using Capstone
 fn disassemble_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
+    use std::panic;
+
     if bytes.len() < 8 {
         return None;
     }
 
-    // Create Capstone disassembler for ARM64
-    let cs = Capstone::new()
-        .arm64()
-        .mode(arch::arm64::ArchMode::Arm)
-        .detail(true)
-        .build()
-        .ok()?;
+    // Catch panics from Capstone FFI calls
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        // Create Capstone disassembler for ARM64
+        let cs = Capstone::new()
+            .arm64()
+            .mode(arch::arm64::ArchMode::Arm)
+            .detail(true)
+            .build()
+            .ok()?;
 
-    // Disassemble the function
-    let insns = cs.disasm_all(bytes, 0x0).ok()?;
+        // Disassemble the function
+        let insns = cs.disasm_all(bytes, 0x0).ok()?;
 
     // Look for pattern: mov to return register (w0/x0) followed by ret
     let mut last_mov_value: Option<i32> = None;
@@ -474,6 +486,10 @@ fn disassemble_arm64_constant_return(bytes: &[u8]) -> Option<i32> {
     }
 
     None
+    }));
+
+    // If panic occurred or error, return None
+    result.ok().flatten()
 }
 
 /// Check if an ARM64 operand is a return register (w0 or x0)

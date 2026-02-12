@@ -352,6 +352,28 @@
     transform: translateY(1px);
   }
 
+  .query-error {
+    margin-top: 12px;
+    padding: 12px 16px;
+    background: rgba(239, 83, 80, 0.1);
+    border: 1px solid var(--error);
+    border-left: 3px solid var(--error);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.5;
+    display: none;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .query-error.visible {
+    display: block;
+  }
+
+  .query-error strong {
+    color: var(--error);
+    font-weight: 600;
+  }
+
   .ag-theme-alpine-dark {
     --ag-background-color: var(--bg-tertiary);
     --ag-foreground-color: var(--text-primary);

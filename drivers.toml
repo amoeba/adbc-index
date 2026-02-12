@@ -2,7 +2,7 @@
 bigquery = "https://pypi.org/project/adbc-driver-bigquery/"
 databricks = "https://github.com/adbc-drivers/databricks"
 flightsql = "https://pypi.org/project/adbc-driver-flightsql/"
-mssql = "https://github.com/adbc-drivers/mssql"
+mssql = "https://github.com/adbc-drivers/microsoft"
 mysql = "https://github.com/adbc-drivers/mysql"
 postgresql = "https://pypi.org/project/adbc-driver-postgresql/"
 redshift = "https://github.com/adbc-drivers/amazon"

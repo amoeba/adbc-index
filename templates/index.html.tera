@@ -72,6 +72,9 @@
   <button class="tab-button" data-tab="symbols">
     Symbols<span class="status-indicator" id="symbolsStatus"></span>
   </button>
+  <button class="tab-button" data-tab="getinfo">
+    GetInfo<span class="status-indicator" id="getinfoStatus"></span>
+  </button>
 </div>
 
 <div class="tab-content active" id="tab-overview">
@@ -94,6 +97,10 @@
     <h3>Unique Symbols per Driver</h3>
     {{ symbols_chart_svg | safe }}
   </div>
+  <div class="chart-container">
+    <h3>GetInfo Success Rate per Driver</h3>
+    {{ info_codes_chart_svg | safe }}
+  </div>
 </div>
 </div>
 
@@ -111,6 +118,7 @@
     <div class="sql-query-buttons">
       <button class="sql-query-button" onclick="runDriversQuery()">Run Query ⏎</button>
     </div>
+    <div id="driversError" class="query-error"></div>
   </div>
   <div id="driversGrid" class="ag-theme-alpine-dark"></div>
 </div>
@@ -130,6 +138,7 @@
     <div class="sql-query-buttons">
       <button class="sql-query-button" onclick="runReleasesQuery()">Run Query ⏎</button>
     </div>
+    <div id="releasesError" class="query-error"></div>
   </div>
   <div id="releasesGrid" class="ag-theme-alpine-dark"></div>
 </div>
@@ -149,6 +158,7 @@
     <div class="sql-query-buttons">
       <button class="sql-query-button" onclick="runLibrariesQuery()">Run Query ⏎</button>
     </div>
+    <div id="librariesError" class="query-error"></div>
   </div>
   <div id="librariesGrid" class="ag-theme-alpine-dark"></div>
 </div>
@@ -168,8 +178,29 @@
     <div class="sql-query-buttons">
       <button class="sql-query-button" onclick="runSymbolsQuery()">Run Query ⏎</button>
     </div>
+    <div id="symbolsError" class="query-error"></div>
   </div>
   <div id="symbolsGrid" class="ag-theme-alpine-dark"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-getinfo">
+<h2>GetInfo (macOS arm64)</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="info_codes.parquet" class="download-link" download>info_codes.parquet ({{ info_codes_size }})</a>
+</div>
+
+<div class="table-container">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="getinfoQuery" placeholder="SELECT * FROM read_parquet('info_codes.parquet')">SELECT * FROM read_parquet('info_codes.parquet')</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runGetinfoQuery()">Run Query ⏎</button>
+    </div>
+    <div id="getinfoError" class="query-error"></div>
+  </div>
+  <div id="getinfoGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
 

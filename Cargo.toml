@@ -26,6 +26,9 @@ capstone = "0.14"
 semver = "1.0"
 glob = "0.3"
 tera = "1.20"
+adbc_core = { git = "https://github.com/apache/arrow-adbc", branch = "main" }
+adbc_driver_manager = { git = "https://github.com/apache/arrow-adbc", branch = "main" }
+adbc_ffi = { git = "https://github.com/apache/arrow-adbc", branch = "main" }
 
 [dev-dependencies]
 tempfile = "3.0"

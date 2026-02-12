@@ -48,23 +48,45 @@ pub fn extract_symbols<P: AsRef<Path>>(
     path: P,
     filter: &SymbolFilter,
 ) -> Result<Vec<String>> {
-    let path = path.as_ref();
-    let mut file = File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    use std::panic;
 
-    let symbols = match Object::parse(&buffer)? {
-        Object::Elf(elf) => extract_elf_symbols(&elf, filter),
-        Object::PE(pe) => extract_pe_symbols(&pe, filter),
-        Object::Mach(mach) => extract_mach_symbols(&mach, filter),
-        _ => {
+    let path = path.as_ref();
+
+    // Catch panics from goblin parsing
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| -> Result<Vec<String>> {
+        let mut file = File::open(path)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+
+        // Limit buffer size to prevent memory issues (100MB max)
+        if buffer.len() > 100 * 1024 * 1024 {
             return Err(crate::error::AdbcIndexError::Config(
-                format!("Unsupported binary format: {}", path.display())
+                format!("Binary file too large: {} ({} bytes)", path.display(), buffer.len())
             ));
         }
-    };
 
-    Ok(symbols)
+        let symbols = match Object::parse(&buffer)? {
+            Object::Elf(elf) => extract_elf_symbols(&elf, filter),
+            Object::PE(pe) => extract_pe_symbols(&pe, filter),
+            Object::Mach(mach) => extract_mach_symbols(&mach, filter),
+            _ => {
+                return Err(crate::error::AdbcIndexError::Config(
+                    format!("Unsupported binary format: {}", path.display())
+                ));
+            }
+        };
+
+        Ok(symbols)
+    }));
+
+    // If panic occurred, return error
+    match result {
+        Ok(Ok(symbols)) => Ok(symbols),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(crate::error::AdbcIndexError::Config(
+            format!("Panic occurred while parsing binary: {}", path.display())
+        )),
+    }
 }
 
 /// Extract symbols from ELF binary (Linux .so)

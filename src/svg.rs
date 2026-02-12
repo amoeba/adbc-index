@@ -81,8 +81,16 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     let date_range = (max_date - min_date).num_seconds() as f64;
     let max_count = plot_points.last().unwrap().1;
 
+    // Handle edge cases
+    if max_count <= 0 {
+        return String::from("<p>No driver release data available</p>");
+    }
+
+    // If all releases are on the same date, avoid division by zero
+    let safe_date_range = if date_range <= 0.0 { 1.0 } else { date_range };
+
     let mut svg = String::new();
-    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent;\">", width, height));
+    svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
     svg.push_str("\n");
 
     // Axes
@@ -123,7 +131,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     // X-axis ticks
     let x_tick_count = 5;
     for i in 0..=x_tick_count {
-        let date_offset = date_range * i as f64 / x_tick_count as f64;
+        let date_offset = safe_date_range * i as f64 / x_tick_count as f64;
         let tick_date = min_date + chrono::Duration::seconds(date_offset as i64);
         let x = margin_left + (plot_width * i as f64 / x_tick_count as f64);
 
@@ -138,7 +146,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     // Plot area fill
     let mut area_points = format!("{},{} ", margin_left, margin_top + plot_height);
     for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range) * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         area_points.push_str(&format!("{},{} ", x, y));
     }
@@ -153,7 +161,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     // Plot line
     let mut polyline_points = String::new();
     for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range) * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         polyline_points.push_str(&format!("{},{} ", x, y));
     }
@@ -166,7 +174,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
 
     // Plot points
     for (date, count) in &plot_points {
-        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / date_range) * plot_width);
+        let x = margin_left + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range) * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         svg.push_str(&format!(
             "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"#00d4ff\"/>",
@@ -222,8 +230,13 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
     let divisor = if is_bytes { 1_048_576.0 } else { 1.0 };
     let scaled_max = max_value / divisor;
 
+    // Handle case where all values are zero
+    if scaled_max <= 0.0 || !scaled_max.is_finite() {
+        return String::from("<p>No data available (all values are zero)</p>");
+    }
+
     let mut svg = String::new();
-    svg.push_str(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent;\">", width, height));
+    svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
     svg.push_str("\n");
 
     // Draw bars
