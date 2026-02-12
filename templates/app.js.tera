@@ -540,8 +540,7 @@ async function init() {
       loadDriversTable(),
       loadReleasesTable(),
       loadLibrariesTable(),
-      loadSymbolsTable(),
-      loadGetinfoTable()
+      loadSymbolsTable()
     ]);
 
     // Check for any failures
@@ -553,7 +552,7 @@ async function init() {
       const firstError = failures[0].reason;
       showError(
         'Failed to Load Tables',
-        `${failures.length} of 5 tables failed to load. Please check the console for details.`,
+        `${failures.length} of 4 tables failed to load. Please check the console for details.`,
         firstError.message
       );
 

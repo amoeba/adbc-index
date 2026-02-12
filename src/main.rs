@@ -17,9 +17,30 @@ use error::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::ProgressBar;
 use models::ReleaseRecord;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tera::{Context, Tera};
+
+// Type aliases for complex types
+type ReleaseDataValue = (
+    Option<String>,
+    chrono::DateTime<chrono::Utc>,
+    String,
+    HashSet<String>,
+    HashSet<String>,
+);
+type ReleaseDataMap = HashMap<(String, String), ReleaseDataValue>;
+type ReleaseDataVec = Vec<((String, String), ReleaseDataValue)>;
+type DriverFirstLatest = HashMap<
+    String,
+    (
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+    ),
+>;
 
 /// Context holding clients for accessing GitHub and PyPI APIs
 struct ClientContext {
@@ -351,7 +372,6 @@ async fn analyze() -> Result<()> {
     let drivers = config::load_config(&config)?;
 
     use models::DriverRecord;
-    use std::collections::{HashMap, HashSet};
 
     // Create GitHub and PyPI clients
     let github_token = std::env::var("GITHUB_TOKEN").ok();
@@ -391,16 +411,7 @@ async fn analyze() -> Result<()> {
     // Collect results from all tasks
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
-    let mut release_data: HashMap<
-        (String, String),
-        (
-            Option<String>,
-            chrono::DateTime<chrono::Utc>,
-            String,
-            HashSet<String>,
-            HashSet<String>,
-        ),
-    > = HashMap::new();
+    let mut release_data: ReleaseDataMap = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
     while let Some(task_result) = tasks.next().await {
@@ -443,15 +454,7 @@ async fn analyze() -> Result<()> {
     ));
 
     // Calculate first and latest release for each driver
-    let mut driver_first_latest: HashMap<
-        String,
-        (
-            chrono::DateTime<chrono::Utc>,
-            Option<String>,
-            chrono::DateTime<chrono::Utc>,
-            Option<String>,
-        ),
-    > = HashMap::new();
+    let mut driver_first_latest: DriverFirstLatest = HashMap::new();
 
     for ((name, _), (version, published_date, _, _, _)) in &release_data {
         driver_first_latest
@@ -594,16 +597,7 @@ async fn analyze() -> Result<()> {
 struct DriverProcessResult {
     library_records: Vec<models::LibraryRecord>,
     symbol_records: Vec<models::SymbolRecord>,
-    release_data: Vec<(
-        (String, String),
-        (
-            Option<String>,
-            chrono::DateTime<chrono::Utc>,
-            String,
-            std::collections::HashSet<String>,
-            std::collections::HashSet<String>,
-        ),
-    )>,
+    release_data: ReleaseDataVec,
     driver_name: String,
     repo_owner: String,
     repo_name: String,
@@ -623,16 +617,7 @@ async fn process_driver(
 
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
-    let mut release_data_vec: Vec<(
-        (String, String),
-        (
-            Option<String>,
-            chrono::DateTime<chrono::Utc>,
-            String,
-            HashSet<String>,
-            HashSet<String>,
-        ),
-    )> = Vec::new();
+    let mut release_data_vec: ReleaseDataVec = Vec::new();
     let mut library_count = 0;
 
     // Create spinner for this driver

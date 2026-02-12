@@ -7,7 +7,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::symbols_schema::{build_symbols_batch, symbols_schema};
+use super::symbols_schema::{build_symbols_batch, symbols_schema, SymbolsBatchData};
 
 pub struct SymbolsWriter {
     writer: ArrowWriter<File>,
@@ -72,7 +72,7 @@ impl SymbolsWriter {
             return_statuses.push(record.return_status.clone());
         }
 
-        let arrays = build_symbols_batch(
+        let arrays = build_symbols_batch(SymbolsBatchData {
             names,
             release_tags,
             versions,
@@ -84,7 +84,7 @@ impl SymbolsWriter {
             is_stubs,
             constant_returns,
             return_statuses,
-        );
+        });
 
         let batch = RecordBatch::try_new(Arc::new(symbols_schema()), arrays)?;
         self.writer.write(&batch)?;
