@@ -42,6 +42,7 @@ impl ProgressTracker {
     }
 
     /// Create a sub-progress bar for a specific task with known total
+    #[allow(dead_code)]
     pub fn add_subtask(&self, total: u64, name: &str) -> ProgressBar {
         let pb = self.multi.add(ProgressBar::new(total));
 
@@ -79,6 +80,7 @@ impl ProgressTracker {
     }
 
     /// Finish the main progress bar and clear it
+    #[allow(dead_code)]
     pub fn finish_and_clear(&self) {
         self.main_bar.finish_and_clear();
     }

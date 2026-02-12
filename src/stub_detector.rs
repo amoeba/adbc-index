@@ -77,6 +77,7 @@ pub struct StubAnalysis {
 }
 
 /// Detect stub implementations in a library
+#[allow(dead_code)]
 pub fn analyze_stubs<P: AsRef<Path>>(path: P) -> Result<Vec<StubAnalysis>> {
     let path = path.as_ref();
     let mut file = File::open(path)?;

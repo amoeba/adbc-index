@@ -127,5 +127,6 @@ impl GitHubClient {
 pub struct RateLimit {
     pub limit: u64,
     pub remaining: u64,
+    #[allow(dead_code)]
     pub reset: u64,
 }

@@ -43,6 +43,7 @@ pub struct PyPIRelease {
 pub struct PyPIAsset {
     pub filename: String,
     pub url: String,
+    #[allow(dead_code)]
     pub sha256: String,
     pub upload_time: DateTime<Utc>,
     pub size: i64,

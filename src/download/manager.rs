@@ -28,6 +28,7 @@ pub struct DownloadTask {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct DownloadResult {
     pub task: DownloadTask,
     pub sha256: String,
@@ -35,6 +36,7 @@ pub struct DownloadResult {
 }
 
 impl DownloadManager {
+    #[allow(dead_code)]
     pub fn new(
         cache_dir: PathBuf,
         max_concurrent: usize,

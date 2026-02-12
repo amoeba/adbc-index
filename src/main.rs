@@ -14,6 +14,7 @@ mod symbols;
 
 use clap::{Parser, Subcommand};
 use error::Result;
+use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::ProgressBar;
 use models::ReleaseRecord;
 use std::path::{Path, PathBuf};
@@ -367,7 +368,7 @@ async fn analyze() -> Result<()> {
     analyze_progress.set_message("Processing drivers");
 
     // Process all drivers in parallel
-    let mut tasks = Vec::new();
+    let mut tasks = FuturesUnordered::new();
     for driver in drivers {
         let ctx = Arc::clone(&ctx);
         let cache_dir_clone = cache_dir.clone();
@@ -402,8 +403,8 @@ async fn analyze() -> Result<()> {
     > = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
-    for task in tasks {
-        match task.await {
+    while let Some(task_result) = tasks.next().await {
+        match task_result {
             Ok(Ok(result)) => {
                 let _driver_name = result.driver_name.clone();
 

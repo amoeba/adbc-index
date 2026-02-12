@@ -33,6 +33,7 @@ pub enum AdbcIndexError {
     PyPIApi { status: u16, message: String },
 
     #[error("Missing GitHub token. Set GITHUB_TOKEN environment variable")]
+    #[allow(dead_code)]
     MissingToken,
 
     #[error("Configuration error: {0}")]

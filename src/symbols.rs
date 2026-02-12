@@ -46,6 +46,7 @@ impl Default for SymbolFilter {
 }
 
 /// Extract exported symbols from a shared library
+#[allow(dead_code)]
 pub fn extract_symbols<P: AsRef<Path>>(path: P, filter: &SymbolFilter) -> Result<Vec<String>> {
     use std::panic;
 
