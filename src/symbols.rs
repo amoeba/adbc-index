@@ -140,20 +140,20 @@ fn extract_mach_symbols(mach: &Mach, filter: &SymbolFilter) -> Vec<String> {
 
     match mach {
         Mach::Binary(macho) => {
-            // Extract exported symbols from dynamic symbol table
+            // Single architecture - extract normally
             for (name, nlist) in macho.symbols().flatten() {
-                // Check if it's an exported symbol (external linkage)
                 if nlist.is_global() && !nlist.is_undefined() {
-                    let name = name.trim_start_matches('_'); // Remove leading underscore
+                    let name = name.trim_start_matches('_');
                     if filter.matches(name) {
                         symbols.push(name.to_string());
                     }
                 }
             }
         }
-        Mach::Fat(_) => {
-            // Fat binaries are more complex - skip for now
-            // They contain multiple architectures, would need to iterate and parse each
+        Mach::Fat(_fat) => {
+            // Universal binary - symbols should be identical across architectures
+            // For now, we skip Fat binaries in this function since we don't have buffer access
+            // They will be handled by extract_symbols_and_stubs which has buffer access
         }
     }
 
@@ -187,8 +187,51 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
             (symbols, stubs)
         }
         Object::Mach(mach) => {
-            let symbols = extract_mach_symbols(&mach, filter);
-            let stubs = crate::stub_detector::analyze_mach_stubs_with_buffer(&mach, &buffer)?;
+            // For Fat binaries, parse the first architecture
+            let (symbols, stubs) = match &mach {
+                Mach::Binary(_) => {
+                    let symbols = extract_mach_symbols(&mach, filter);
+                    let stubs = crate::stub_detector::analyze_mach_stubs_with_buffer(&mach, &buffer)?;
+                    (symbols, stubs)
+                }
+                Mach::Fat(fat) => {
+                    // Parse all architectures from Fat binary and merge symbols
+                    let mut all_symbols = Vec::new();
+                    let mut all_stubs = Vec::new();
+
+                    for arch_result in fat.iter_arches() {
+                        if let Ok(arch) = arch_result {
+                            let start = arch.offset as usize;
+                            let end = (arch.offset + arch.size) as usize;
+                            if end <= buffer.len() {
+                                let arch_slice = &buffer[start..end];
+                                if let Ok(arch_mach) = Mach::parse(arch_slice) {
+                                    // Extract symbols and stubs from this architecture
+                                    let arch_symbols = extract_mach_symbols(&arch_mach, filter);
+                                    let arch_stubs = crate::stub_detector::analyze_mach_stubs_with_buffer(
+                                        &arch_mach,
+                                        arch_slice,
+                                    )?;
+
+                                    // Merge symbols (union)
+                                    all_symbols.extend(arch_symbols);
+
+                                    // Merge stubs - keep all stubs from all architectures
+                                    // Note: if a symbol appears in multiple archs with different stub status,
+                                    // we keep all entries and let the caller decide how to handle it
+                                    all_stubs.extend(arch_stubs);
+                                }
+                            }
+                        }
+                    }
+
+                    // Deduplicate symbols while preserving order
+                    all_symbols.sort();
+                    all_symbols.dedup();
+
+                    (all_symbols, all_stubs)
+                }
+            };
             (symbols, stubs)
         }
         _ => {

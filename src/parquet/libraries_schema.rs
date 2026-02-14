@@ -13,7 +13,11 @@ pub fn create_libraries_schema() -> Arc<Schema> {
             false,
         ),
         Field::new("os", DataType::Utf8, false),
-        Field::new("arch", DataType::Utf8, false),
+        Field::new(
+            "arch",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            false,
+        ),
         Field::new("library_name", DataType::Utf8, false),
         Field::new("library_size_bytes", DataType::Int64, false),
         Field::new("library_sha256", DataType::Utf8, false),

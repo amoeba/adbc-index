@@ -23,5 +23,11 @@ pub fn create_releases_schema() -> Arc<Schema> {
             DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             false,
         ),
+        Field::new("has_universal_binary", DataType::Boolean, false),
+        Field::new(
+            "universal_binary_archs",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            true,
+        ),
     ]))
 }

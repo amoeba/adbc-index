@@ -2,7 +2,7 @@
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArtifactMetadata {
     pub os: Option<String>,
-    pub arch: Option<String>,
+    pub arch: Option<Vec<String>>,
     pub version: Option<String>,
     pub file_format: Option<String>,
 }
@@ -47,7 +47,16 @@ pub fn parse_artifact(filename: &str) -> ArtifactMetadata {
 impl ArtifactMetadata {
     fn is_valid(&self) -> bool {
         // At least one field must be populated
-        self.os.is_some() || self.arch.is_some() || self.version.is_some()
+        let has_data = self.os.is_some() || self.arch.is_some() || self.version.is_some();
+
+        // Additionally, if arch is present, it must not be empty
+        let arch_valid = if let Some(ref arch) = self.arch {
+            !arch.is_empty()
+        } else {
+            true // None is valid (means unknown arch)
+        };
+
+        has_data && arch_valid
     }
 }
 
@@ -87,10 +96,10 @@ fn strategy_wheel(filename: &str) -> Option<ArtifactMetadata> {
 
 /// Parse wheel platform tag to OS and architecture
 /// Examples:
-/// - linux_x86_64 -> (linux, amd64)
-/// - macosx_10_9_x86_64 -> (darwin, amd64)
-/// - win_amd64 -> (windows, amd64)
-fn parse_wheel_platform(platform: &str) -> (Option<String>, Option<String>) {
+/// - linux_x86_64 -> (linux, [amd64])
+/// - macosx_10_9_x86_64 -> (darwin, [amd64])
+/// - win_amd64 -> (windows, [amd64])
+fn parse_wheel_platform(platform: &str) -> (Option<String>, Option<Vec<String>>) {
     let lower = platform.to_lowercase();
 
     // Determine OS
@@ -109,13 +118,13 @@ fn parse_wheel_platform(platform: &str) -> (Option<String>, Option<String>) {
 
     // Determine architecture from the platform tag
     let arch = if lower.contains("x86_64") || lower.contains("amd64") {
-        Some("amd64".to_string())
+        Some(vec!["amd64".to_string()])
     } else if lower.contains("aarch64") || lower.contains("arm64") {
-        Some("arm64".to_string())
+        Some(vec!["arm64".to_string()])
     } else if lower.contains("i686") || lower.contains("win32") {
-        Some("386".to_string())
+        Some(vec!["386".to_string()])
     } else if lower.contains("armv7") {
-        Some("arm".to_string())
+        Some(vec!["arm".to_string()])
     } else if lower == "any" {
         // Platform-independent
         None
@@ -217,15 +226,17 @@ fn strategy_platform_in_name(filename: &str) -> Option<ArtifactMetadata> {
         None
     };
 
-    // Extract architecture
-    let arch = if lower.contains("amd64") || lower.contains("x86_64") || lower.contains("x64") {
-        Some("amd64".to_string())
+    // Extract architecture - check for universal first
+    let arch = if lower.contains("universal") {
+        Some(vec!["amd64".to_string(), "arm64".to_string()])
+    } else if lower.contains("amd64") || lower.contains("x86_64") || lower.contains("x64") {
+        Some(vec!["amd64".to_string()])
     } else if lower.contains("arm64") || lower.contains("aarch64") {
-        Some("arm64".to_string())
+        Some(vec!["arm64".to_string()])
     } else if lower.contains("386") || lower.contains("x86") {
-        Some("386".to_string())
+        Some(vec!["386".to_string()])
     } else if lower.contains("arm") {
-        Some("arm".to_string())
+        Some(vec!["arm".to_string()])
     } else {
         None
     };
@@ -291,15 +302,16 @@ fn recognize_os(s: &str) -> Option<String> {
 }
 
 /// Recognize architecture from string
-fn recognize_arch(s: &str) -> Option<String> {
+fn recognize_arch(s: &str) -> Option<Vec<String>> {
     let lower = s.to_lowercase();
     match lower.as_str() {
-        "amd64" | "x86_64" | "x64" => Some("amd64".to_string()),
-        "arm64" | "aarch64" => Some("arm64".to_string()),
-        "386" | "i386" | "x86" => Some("386".to_string()),
-        "arm" | "armv7" => Some("arm".to_string()),
-        "ppc64le" => Some("ppc64le".to_string()),
-        "s390x" => Some("s390x".to_string()),
+        "universal" => Some(vec!["amd64".to_string(), "arm64".to_string()]),
+        "amd64" | "x86_64" | "x64" => Some(vec!["amd64".to_string()]),
+        "arm64" | "aarch64" => Some(vec!["arm64".to_string()]),
+        "386" | "i386" | "x86" => Some(vec!["386".to_string()]),
+        "arm" | "armv7" => Some(vec!["arm".to_string()]),
+        "ppc64le" => Some(vec!["ppc64le".to_string()]),
+        "s390x" => Some(vec!["s390x".to_string()]),
         _ => None,
     }
 }
@@ -385,7 +397,7 @@ mod tests {
     fn test_underscore_separated() {
         let meta = parse_artifact("mysql_linux_amd64_v0.2.0.tar.gz");
         assert_eq!(meta.os, Some("linux".to_string()));
-        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["amd64".to_string()]));
         assert_eq!(meta.version, Some("0.2.0".to_string()));
         assert_eq!(meta.file_format, Some("tar.gz".to_string()));
     }
@@ -394,7 +406,7 @@ mod tests {
     fn test_dash_separated() {
         let meta = parse_artifact("mysql-darwin-arm64-1.0.0.zip");
         assert_eq!(meta.os, Some("darwin".to_string()));
-        assert_eq!(meta.arch, Some("arm64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["arm64".to_string()]));
         assert_eq!(meta.version, Some("1.0.0".to_string()));
         assert_eq!(meta.file_format, Some("zip".to_string()));
     }
@@ -403,7 +415,7 @@ mod tests {
     fn test_platform_in_name() {
         let meta = parse_artifact("adbc-driver-postgresql-macos-arm64-1.0.0.tar.gz");
         assert_eq!(meta.os, Some("darwin".to_string()));
-        assert_eq!(meta.arch, Some("arm64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["arm64".to_string()]));
         assert_eq!(meta.version, Some("1.0.0".to_string()));
     }
 
@@ -411,7 +423,7 @@ mod tests {
     fn test_windows() {
         let meta = parse_artifact("driver_windows_amd64_v1.2.3.zip");
         assert_eq!(meta.os, Some("windows".to_string()));
-        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["amd64".to_string()]));
         assert_eq!(meta.version, Some("1.2.3".to_string()));
     }
 
@@ -419,7 +431,7 @@ mod tests {
     fn test_wheel_linux() {
         let meta = parse_artifact("adbc_driver_sqlite-0.1.0-py3-none-linux_x86_64.whl");
         assert_eq!(meta.os, Some("linux".to_string()));
-        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["amd64".to_string()]));
         assert_eq!(meta.version, Some("0.1.0".to_string()));
         assert_eq!(meta.file_format, Some("whl".to_string()));
     }
@@ -428,7 +440,7 @@ mod tests {
     fn test_wheel_macos_intel() {
         let meta = parse_artifact("adbc_driver_sqlite-0.2.0-py3-none-macosx_10_9_x86_64.whl");
         assert_eq!(meta.os, Some("darwin".to_string()));
-        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["amd64".to_string()]));
         assert_eq!(meta.version, Some("0.2.0".to_string()));
     }
 
@@ -436,7 +448,7 @@ mod tests {
     fn test_wheel_macos_arm() {
         let meta = parse_artifact("adbc_driver_postgresql-1.0.0-py3-none-macosx_11_0_arm64.whl");
         assert_eq!(meta.os, Some("darwin".to_string()));
-        assert_eq!(meta.arch, Some("arm64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["arm64".to_string()]));
         assert_eq!(meta.version, Some("1.0.0".to_string()));
     }
 
@@ -444,7 +456,17 @@ mod tests {
     fn test_wheel_windows() {
         let meta = parse_artifact("adbc_driver_flightsql-0.5.0-py3-none-win_amd64.whl");
         assert_eq!(meta.os, Some("windows".to_string()));
-        assert_eq!(meta.arch, Some("amd64".to_string()));
+        assert_eq!(meta.arch, Some(vec!["amd64".to_string()]));
         assert_eq!(meta.version, Some("0.5.0".to_string()));
+    }
+
+    #[test]
+    fn test_universal_binary() {
+        let meta = parse_artifact("libduckdb-osx-universal.zip");
+        assert_eq!(meta.os, Some("darwin".to_string()));
+        assert_eq!(
+            meta.arch,
+            Some(vec!["amd64".to_string(), "arm64".to_string()])
+        );
     }
 }

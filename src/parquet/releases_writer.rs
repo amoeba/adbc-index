@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::models::ReleaseRecord;
 use crate::parquet::releases_schema::create_releases_schema;
-use arrow::array::{ArrayRef, StringArray, TimestampMillisecondArray};
+use arrow::array::{ArrayRef, BooleanArray, StringArray, TimestampMillisecondArray};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -107,6 +107,28 @@ impl ReleasesWriter {
         }
         let arch = arch_builder.finish();
 
+        // Build has_universal_binary boolean array
+        let has_universal_binary: BooleanArray = self
+            .buffer
+            .iter()
+            .map(|r| Some(r.has_universal_binary))
+            .collect();
+
+        // Build universal_binary_archs list array (nullable)
+        let mut universal_archs_builder = ListBuilder::new(StringBuilder::new());
+        for record in &self.buffer {
+            if let Some(ref archs) = record.universal_binary_archs {
+                let values_builder = universal_archs_builder.values();
+                for arch_val in archs {
+                    values_builder.append_value(arch_val);
+                }
+                universal_archs_builder.append(true);
+            } else {
+                universal_archs_builder.append(false); // null
+            }
+        }
+        let universal_binary_archs = universal_archs_builder.finish();
+
         let columns: Vec<ArrayRef> = vec![
             Arc::new(names),
             Arc::new(release_tags),
@@ -115,6 +137,8 @@ impl ReleasesWriter {
             Arc::new(release_urls),
             Arc::new(os),
             Arc::new(arch),
+            Arc::new(has_universal_binary),
+            Arc::new(universal_binary_archs),
         ];
 
         Ok(RecordBatch::try_new(self.schema.clone(), columns)?)

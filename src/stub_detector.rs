@@ -219,32 +219,45 @@ pub fn analyze_mach_stubs_with_buffer(
     mach: &goblin::mach::Mach,
     buffer: &[u8],
 ) -> Result<Vec<StubAnalysis>> {
+    match mach {
+        goblin::mach::Mach::Binary(macho) => analyze_single_macho_stubs(macho, buffer),
+        goblin::mach::Mach::Fat(_fat) => {
+            // Fat binaries are handled in extract_symbols_and_stubs
+            // by parsing individual architectures
+            Ok(vec![])
+        }
+    }
+}
+
+/// Analyze a single Mach-O architecture for stub functions
+fn analyze_single_macho_stubs(
+    macho: &goblin::mach::MachO,
+    buffer: &[u8],
+) -> Result<Vec<StubAnalysis>> {
     let mut results = Vec::new();
 
-    if let goblin::mach::Mach::Binary(macho) = mach {
-        for (name, nlist) in macho.symbols().flatten() {
-            let name = name.trim_start_matches('_');
+    for (name, nlist) in macho.symbols().flatten() {
+        let name = name.trim_start_matches('_');
 
-            // Only analyze ADBC functions
-            if !name.starts_with("Adbc") {
-                continue;
-            }
+        // Only analyze ADBC functions
+        if !name.starts_with("Adbc") {
+            continue;
+        }
 
-            if nlist.is_global() && !nlist.is_undefined() {
-                let offset = nlist.n_value as usize;
-                if offset < buffer.len() {
-                    let func_bytes = &buffer[offset..buffer.len().min(offset + 50)];
+        if nlist.is_global() && !nlist.is_undefined() {
+            let offset = nlist.n_value as usize;
+            if offset < buffer.len() {
+                let func_bytes = &buffer[offset..buffer.len().min(offset + 50)];
 
-                    // Detect architecture from mach-o header
-                    let is_arm64 = macho.header.cputype() == goblin::mach::cputype::CPU_TYPE_ARM64;
+                // Detect architecture from mach-o header
+                let is_arm64 = macho.header.cputype() == goblin::mach::cputype::CPU_TYPE_ARM64;
 
-                    let analysis = if is_arm64 {
-                        analyze_arm64_function(name, func_bytes)
-                    } else {
-                        analyze_x86_function(name, func_bytes)
-                    };
-                    results.push(analysis);
-                }
+                let analysis = if is_arm64 {
+                    analyze_arm64_function(name, func_bytes)
+                } else {
+                    analyze_x86_function(name, func_bytes)
+                };
+                results.push(analysis);
             }
         }
     }

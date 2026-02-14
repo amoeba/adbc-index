@@ -24,11 +24,13 @@ use tera::{Context, Tera};
 
 // Type aliases for complex types
 type ReleaseDataValue = (
-    Option<String>,
-    chrono::DateTime<chrono::Utc>,
-    String,
-    HashSet<String>,
-    HashSet<String>,
+    Option<String>,              // version
+    chrono::DateTime<chrono::Utc>, // published_date
+    String,                      // release_url
+    HashSet<String>,             // os_set
+    HashSet<String>,             // arch_set
+    bool,                        // has_universal_binary
+    Option<HashSet<String>>,     // universal_binary_archs (architectures from universal binaries)
 );
 type ReleaseDataMap = HashMap<(String, String), ReleaseDataValue>;
 type ReleaseDataVec = Vec<((String, String), ReleaseDataValue)>;
@@ -456,7 +458,7 @@ async fn analyze() -> Result<()> {
     // Calculate first and latest release for each driver
     let mut driver_first_latest: DriverFirstLatest = HashMap::new();
 
-    for ((name, _), (version, published_date, _, _, _)) in &release_data {
+    for ((name, _), (version, published_date, _, _, _, _, _)) in &release_data {
         driver_first_latest
             .entry(name.clone())
             .and_modify(|(first_date, first_ver, latest_date, latest_ver)| {
@@ -519,11 +521,19 @@ async fn analyze() -> Result<()> {
     let mut release_records: Vec<models::ReleaseRecord> = release_data
         .into_iter()
         .map(
-            |((name, release_tag), (version, published_date, release_url, os_set, arch_set))| {
+            |((name, release_tag), (version, published_date, release_url, os_set, arch_set, has_universal_binary, universal_binary_archs_opt))| {
                 let mut os: Vec<String> = os_set.into_iter().collect();
                 let mut arch: Vec<String> = arch_set.into_iter().collect();
                 os.sort();
                 arch.sort();
+
+                let universal_binary_archs = if let Some(archs_set) = universal_binary_archs_opt {
+                    let mut archs: Vec<String> = archs_set.into_iter().collect();
+                    archs.sort();
+                    Some(archs)
+                } else {
+                    None
+                };
 
                 models::ReleaseRecord {
                     name,
@@ -533,6 +543,8 @@ async fn analyze() -> Result<()> {
                     release_url,
                     os,
                     arch,
+                    has_universal_binary,
+                    universal_binary_archs,
                 }
             },
         )
@@ -684,6 +696,17 @@ async fn process_driver(
             // Only process if we found a library
             if let Some(lib_info) = library_info {
                 if let (Some(os), Some(arch)) = (&artifact_meta.os, &artifact_meta.arch) {
+                    // Skip if arch list is empty (invalid metadata)
+                    if arch.is_empty() {
+                        if std::env::var("DEBUG").is_ok() {
+                            eprintln!(
+                                "⚠️  Skipping asset {} - empty architecture list (invalid metadata)",
+                                asset.name
+                            );
+                        }
+                        continue;
+                    }
+
                     // Add to library records
                     library_records.push(LibraryRecord {
                         name: driver.name.clone(),
@@ -751,15 +774,44 @@ async fn process_driver(
                     // Aggregate release data
                     let key = (driver.name.clone(), tag.clone());
 
+                    // Determine if this is a universal binary (multiple architectures in a single library)
+                    let is_universal = arch.len() > 1;
+
                     // Find existing entry or create new one
                     if let Some(entry) = release_data_vec.iter_mut().find(|(k, _)| k == &key) {
                         entry.1 .3.insert(os.clone());
-                        entry.1 .4.insert(arch.clone());
+                        // arch is now Vec<String>, so extend the set with all architectures
+                        for arch_val in arch.iter() {
+                            entry.1 .4.insert(arch_val.clone());
+                        }
+                        // Track universal binary information
+                        if is_universal {
+                            entry.1 .5 = true; // has_universal_binary
+                            let universal_archs = entry.1 .6.get_or_insert_with(HashSet::new);
+                            for arch_val in arch.iter() {
+                                universal_archs.insert(arch_val.clone());
+                            }
+                        }
                     } else {
                         let mut os_set = HashSet::new();
                         let mut arch_set = HashSet::new();
                         os_set.insert(os.clone());
-                        arch_set.insert(arch.clone());
+                        // arch is now Vec<String>, so insert all architectures
+                        for arch_val in arch.iter() {
+                            arch_set.insert(arch_val.clone());
+                        }
+
+                        let has_universal_binary = is_universal;
+                        let universal_binary_archs = if is_universal {
+                            let mut archs = HashSet::new();
+                            for arch_val in arch.iter() {
+                                archs.insert(arch_val.clone());
+                            }
+                            Some(archs)
+                        } else {
+                            None
+                        };
+
                         release_data_vec.push((
                             key,
                             (
@@ -768,6 +820,8 @@ async fn process_driver(
                                 release_url.clone(),
                                 os_set,
                                 arch_set,
+                                has_universal_binary,
+                                universal_binary_archs,
                             ),
                         ));
                     }

@@ -63,6 +63,10 @@ pub struct ReleaseRecord {
     pub release_url: String,
     pub os: Vec<String>,
     pub arch: Vec<String>,
+    /// True if this release contains any universal/fat binaries (single binary supporting multiple architectures)
+    pub has_universal_binary: bool,
+    /// Architectures supported by universal binaries in this release (if any)
+    pub universal_binary_archs: Option<Vec<String>>,
 }
 
 /// A library record - one row per shared library
@@ -73,7 +77,7 @@ pub struct LibraryRecord {
     pub version: Option<String>,
     pub published_date: DateTime<Utc>,
     pub os: String,
-    pub arch: String,
+    pub arch: Vec<String>,
     pub library_name: String,
     pub library_size_bytes: i64,
     pub library_sha256: String,
@@ -102,7 +106,7 @@ pub struct SymbolRecord {
     pub release_tag: String,
     pub version: Option<String>,
     pub os: String,
-    pub arch: String,
+    pub arch: Vec<String>,
     pub library_name: String,
     pub symbol: String,
     pub symbol_index: i64,

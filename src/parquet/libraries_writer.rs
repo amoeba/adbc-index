@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::models::LibraryRecord;
 use crate::parquet::libraries_schema::create_libraries_schema;
-use arrow::array::{ArrayRef, Int64Array, StringArray, TimestampMillisecondArray};
+use arrow::array::{ArrayRef, Int64Array, ListBuilder, StringArray, StringBuilder, TimestampMillisecondArray};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -79,7 +79,15 @@ impl LibrariesWriter {
 
         let os: StringArray = self.buffer.iter().map(|r| Some(r.os.as_str())).collect();
 
-        let arch: StringArray = self.buffer.iter().map(|r| Some(r.arch.as_str())).collect();
+        let mut arch_builder = ListBuilder::new(StringBuilder::new());
+        for record in &self.buffer {
+            let values_builder = arch_builder.values();
+            for arch_val in &record.arch {
+                values_builder.append_value(arch_val);
+            }
+            arch_builder.append(true);
+        }
+        let arch = arch_builder.finish();
 
         let library_names: StringArray = self
             .buffer
