@@ -317,3 +317,221 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
     svg.push_str("</svg>\n");
     svg
 }
+
+/// Generate a horizontal box and whisker plot
+pub fn generate_box_plot(csv: &str, title: &str) -> String {
+    // Parse CSV to extract names and box plot statistics
+    // Expected format: name,min,q1,median,q3,max,latest
+    let mut data: Vec<(String, f64, f64, f64, f64, f64, f64)> = Vec::new();
+
+    for (idx, line) in csv.lines().enumerate() {
+        if idx == 0 {
+            continue; // Skip header
+        }
+
+        let cells = csv_utils::parse_csv_line(line);
+        if cells.len() >= 7 {
+            let name = &cells[0];
+            if let (Ok(min), Ok(q1), Ok(median), Ok(q3), Ok(max), Ok(latest)) = (
+                cells[1].parse::<f64>(),
+                cells[2].parse::<f64>(),
+                cells[3].parse::<f64>(),
+                cells[4].parse::<f64>(),
+                cells[5].parse::<f64>(),
+                cells[6].parse::<f64>(),
+            ) {
+                data.push((name.clone(), min, q1, median, q3, max, latest));
+            }
+        }
+    }
+
+    if data.is_empty() {
+        return String::from("<p>No data available</p>");
+    }
+
+    // SVG dimensions
+    let width = 500.0;
+    let box_height = 20.0;
+    let box_spacing = 5.0;
+    let margin_left = 100.0;
+    let margin_right = 80.0;
+    let margin_top = 60.0;  // Increased for legend
+    let margin_bottom = 10.0;
+    let plot_width = width - margin_left - margin_right;
+
+    let total_boxes = data.len() as f64;
+    let height = margin_top + margin_bottom + (total_boxes * (box_height + box_spacing));
+
+    // Find global min and max for scaling
+    let global_max = data
+        .iter()
+        .map(|(_, _, _, _, _, max, _)| *max)
+        .fold(0.0, f64::max);
+
+    // Convert to MB for library sizes
+    let is_bytes = title.contains("MB");
+    let divisor = if is_bytes { 1_048_576.0 } else { 1.0 };
+    let scaled_max = global_max / divisor;
+
+    // Handle case where all values are zero
+    if scaled_max <= 0.0 || !scaled_max.is_finite() {
+        return String::from("<p>No data available (all values are zero)</p>");
+    }
+
+    let mut svg = String::new();
+    svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
+    svg.push('\n');
+
+    // Add legend
+    let legend_y = 15.0;
+    let legend_x_start = margin_left;
+    let legend_spacing = 90.0;
+
+    // Whisker
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+        legend_x_start, legend_y, legend_x_start + 15.0, legend_y
+    ));
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+        legend_x_start, legend_y - 3.0, legend_x_start, legend_y + 3.0
+    ));
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">Min-Max</text>",
+        legend_x_start + 20.0, legend_y
+    ));
+    svg.push('\n');
+
+    // Box
+    let box_legend_x = legend_x_start + legend_spacing;
+    svg.push_str(&format!(
+        "<rect x=\"{}\" y=\"{}\" width=\"15\" height=\"10\" fill=\"url(#boxGradient)\" stroke=\"#00d4ff\" stroke-width=\"1\"/>",
+        box_legend_x, legend_y - 5.0
+    ));
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">Q1-Q3</text>",
+        box_legend_x + 20.0, legend_y
+    ));
+    svg.push('\n');
+
+    // Median
+    let median_legend_x = box_legend_x + legend_spacing;
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffffff\" stroke-width=\"2\"/>",
+        median_legend_x, legend_y - 5.0, median_legend_x, legend_y + 5.0
+    ));
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">Median</text>",
+        median_legend_x + 8.0, legend_y
+    ));
+    svg.push('\n');
+
+    // Latest release
+    let latest_legend_x = median_legend_x + legend_spacing;
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffd700\" stroke-width=\"2.5\"/>",
+        latest_legend_x, legend_y - 5.0, latest_legend_x, legend_y + 5.0
+    ));
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">Latest</text>",
+        latest_legend_x + 8.0, legend_y
+    ));
+    svg.push('\n');
+
+    // Draw box plots
+    for (i, (name, min, q1, median, q3, max, latest)) in data.iter().enumerate() {
+        let y = margin_top + (i as f64 * (box_height + box_spacing));
+        let center_y = y + box_height / 2.0;
+
+        // Scale values
+        let scaled_min = min / divisor;
+        let scaled_q1 = q1 / divisor;
+        let scaled_median = median / divisor;
+        let scaled_q3 = q3 / divisor;
+        let scaled_max_val = max / divisor;
+        let scaled_latest = latest / divisor;
+
+        // Calculate positions
+        let min_x = margin_left + (scaled_min / scaled_max) * plot_width;
+        let q1_x = margin_left + (scaled_q1 / scaled_max) * plot_width;
+        let median_x = margin_left + (scaled_median / scaled_max) * plot_width;
+        let q3_x = margin_left + (scaled_q3 / scaled_max) * plot_width;
+        let max_x = margin_left + (scaled_max_val / scaled_max) * plot_width;
+        let latest_x = margin_left + (scaled_latest / scaled_max) * plot_width;
+
+        let box_width = q3_x - q1_x;
+
+        // Whisker line (min to max)
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            min_x, center_y, max_x, center_y
+        ));
+        svg.push('\n');
+
+        // Min cap
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            min_x, y + 5.0, min_x, y + box_height - 5.0
+        ));
+        svg.push('\n');
+
+        // Max cap
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            max_x, y + 5.0, max_x, y + box_height - 5.0
+        ));
+        svg.push('\n');
+
+        // Box (Q1 to Q3)
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#boxGradient)\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            q1_x, y, box_width, box_height
+        ));
+        svg.push('\n');
+
+        // Median line
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffffff\" stroke-width=\"2\"/>",
+            median_x, y, median_x, y + box_height
+        ));
+        svg.push('\n');
+
+        // Latest release line (yellow)
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffd700\" stroke-width=\"2.5\"/>",
+            latest_x, y - 2.0, latest_x, y + box_height + 2.0
+        ));
+        svg.push('\n');
+
+        // Label
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>",
+            margin_left - 8.0, center_y, name
+        ));
+        svg.push('\n');
+
+        // Value range text
+        let value_text = if is_bytes {
+            format!("{:.1}-{:.1}", scaled_min, scaled_max_val)
+        } else {
+            format!("{:.0}-{:.0}", scaled_min, scaled_max_val)
+        };
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
+            max_x + 8.0, center_y, value_text
+        ));
+        svg.push('\n');
+    }
+
+    // Add gradient definition
+    svg.insert_str(
+        svg.find("<line").unwrap(),
+        "<defs><linearGradient id=\"boxGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
+         <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:0.7\" />\
+         <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:0.7\" />\
+         </linearGradient></defs>",
+    );
+
+    svg.push_str("</svg>\n");
+    svg
+}

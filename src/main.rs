@@ -1012,9 +1012,27 @@ async fn html() -> Result<()> {
         "SELECT name, COUNT(*) as count FROM read_parquet('dist/releases.parquet') GROUP BY name ORDER BY count DESC"
     )?;
 
-    // Query average library size per driver
+    // Query library size statistics per driver (for box plot)
     let libraries_chart_csv = query_duckdb(
-        "SELECT name, AVG(library_size_bytes) as avg_size FROM read_parquet('dist/libraries.parquet') GROUP BY name ORDER BY avg_size DESC"
+        "WITH stats AS ( \
+           SELECT name, \
+           MIN(library_size_bytes) as min_size, \
+           PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY library_size_bytes) as q1, \
+           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY library_size_bytes) as median, \
+           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY library_size_bytes) as q3, \
+           MAX(library_size_bytes) as max_size \
+           FROM read_parquet('dist/libraries.parquet') \
+           GROUP BY name \
+         ), \
+         latest AS ( \
+           SELECT name, library_size_bytes as latest_size \
+           FROM read_parquet('dist/libraries.parquet') \
+           QUALIFY ROW_NUMBER() OVER (PARTITION BY name ORDER BY published_date DESC) = 1 \
+         ) \
+         SELECT s.name, s.min_size, s.q1, s.median, s.q3, s.max_size, l.latest_size \
+         FROM stats s \
+         JOIN latest l ON s.name = l.name \
+         ORDER BY s.median DESC"
     )?;
 
     // Query symbol count per driver
@@ -1028,7 +1046,7 @@ async fn html() -> Result<()> {
     let timeline_svg = svg::generate_driver_timeline_svg(&timeline_csv);
     let releases_chart_svg = svg::generate_bar_chart(&releases_chart_csv, "Releases per Driver");
     let libraries_chart_svg =
-        svg::generate_bar_chart(&libraries_chart_csv, "Average Library Size by Driver (MB)");
+        svg::generate_box_plot(&libraries_chart_csv, "Library Size by Driver (MB)");
     let symbols_chart_svg =
         svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
 

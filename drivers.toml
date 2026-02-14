@@ -1,5 +1,6 @@
 [drivers]
 bigquery = "https://pypi.org/project/adbc-driver-bigquery/"
+clickhouse = "https://github.com/adbc-drivers/clickhouse"
 databricks = "https://github.com/adbc-drivers/databricks"
 flightsql = "https://pypi.org/project/adbc-driver-flightsql/"
 mssql = "https://github.com/adbc-drivers/microsoft"

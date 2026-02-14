@@ -87,7 +87,7 @@
     {{ releases_chart_svg | safe }}
   </div>
   <div class="chart-container">
-    <h3>Average Library Size by Driver</h3>
+    <h3>Library Size by Driver</h3>
     {{ libraries_chart_svg | safe }}
   </div>
   <div class="chart-container">
