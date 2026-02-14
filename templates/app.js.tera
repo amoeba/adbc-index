@@ -1,6 +1,12 @@
 <script type="module">
 let db;
 let loadingSteps = {};
+let tableFilters = {
+  drivers: {},
+  releases: {},
+  libraries: {},
+  symbols: {}
+};
 
 function updateLoadingStep(id, status, message) {
   if (!loadingSteps[id]) {
@@ -142,6 +148,87 @@ function convertBigIntsToNumbers(obj) {
   return result;
 }
 
+function filterTableByCell(tableName, columnName, value) {
+  console.log(`filterTableByCell called: table=${tableName}, column=${columnName}, value=${value}`);
+
+  // Get the query textarea element
+  const queryId = `${tableName}Query`;
+  const queryElement = document.getElementById(queryId);
+  if (!queryElement) {
+    console.error(`Query element not found: ${queryId}`);
+    return;
+  }
+
+  // Get the filters for this table
+  const filters = tableFilters[tableName];
+  console.log('Current filters:', JSON.stringify(filters));
+
+  // Check if this column is already filtered with this exact value
+  // Use hasOwnProperty to check if the key exists, and compare values carefully
+  const hasFilter = Object.prototype.hasOwnProperty.call(filters, columnName);
+  const isSameValue = hasFilter && (
+    (filters[columnName] === value) ||
+    (filters[columnName] === null && value === null) ||
+    (filters[columnName] === undefined && value === undefined)
+  );
+
+  console.log(`hasFilter=${hasFilter}, isSameValue=${isSameValue}, stored value=${filters[columnName]}`);
+
+  if (isSameValue) {
+    // Remove the filter for this column (toggle off)
+    console.log(`Removing filter for ${columnName}`);
+    delete filters[columnName];
+  } else {
+    // Add or update the filter for this column (toggle on)
+    console.log(`Adding filter for ${columnName} = ${value}`);
+    filters[columnName] = value;
+  }
+
+  console.log('Updated filters:', JSON.stringify(filters));
+
+  // Build the query from the filters
+  const defaultQuery = `SELECT * FROM read_parquet('${tableName}.parquet')`;
+
+  if (Object.keys(filters).length === 0) {
+    // No filters, use default query
+    console.log('No filters, using default query');
+    queryElement.value = defaultQuery;
+  } else {
+    // Build WHERE clauses for each filter
+    const whereClauses = Object.entries(filters).map(([col, val]) => {
+      if (val === null || val === undefined) {
+        return `${col} IS NULL`;
+      } else {
+        // Escape single quotes in the value for SQL
+        const escapedValue = String(val).replace(/'/g, "''");
+        return `${col} = '${escapedValue}'`;
+      }
+    });
+
+    const whereClause = whereClauses.join(' AND ');
+    const newQuery = `SELECT * FROM read_parquet('${tableName}.parquet') WHERE ${whereClause}`;
+    console.log('Built query:', newQuery);
+    queryElement.value = newQuery;
+  }
+
+  // Run the query
+  const runFunctions = {
+    'drivers': runDriversQuery,
+    'releases': runReleasesQuery,
+    'libraries': runLibrariesQuery,
+    'symbols': runSymbolsQuery
+  };
+
+  const runFunction = runFunctions[tableName];
+  if (runFunction) {
+    console.log('Running query...');
+    // Pass skipClearFilters = true to prevent clearing the filters we just set
+    runFunction(true);
+  } else {
+    console.error(`No run function found for table: ${tableName}`);
+  }
+}
+
 async function queryDuckDB(sql, context) {
   let conn;
   try {
@@ -206,6 +293,9 @@ async function loadDriversTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 20,
+      onCellDoubleClicked: (event) => {
+        filterTableByCell('drivers', event.colDef.field, event.value);
+      }
     };
 
     // Destroy existing grid before creating new one
@@ -216,12 +306,6 @@ async function loadDriversTable(customSQL) {
     driversGrid = agGrid.createGrid(document.getElementById('driversGrid'), gridOptions);
 
     setTableStatus('drivers', 'success', `${data.length} rows`);
-
-    // Update stats card
-    const statEl = document.getElementById('stat-drivers');
-    if (statEl) {
-      statEl.textContent = data.length;
-    }
   } catch (err) {
     console.error('Failed to load drivers table:', err);
     setTableStatus('drivers', 'error', err.message);
@@ -233,10 +317,16 @@ async function loadDriversTable(customSQL) {
   }
 }
 
-async function runDriversQuery() {
+async function runDriversQuery(skipClearFilters = false) {
   console.log('Running drivers query...');
   const queryText = document.getElementById('driversQuery').value;
   console.log('Query:', queryText);
+
+  // Clear filters when running a manual query (but not when called from filterTableByCell)
+  if (!skipClearFilters) {
+    tableFilters.drivers = {};
+  }
+
   await loadDriversTable();
   updateURL();
 }
@@ -300,6 +390,9 @@ async function loadReleasesTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 50,
+      onCellDoubleClicked: (event) => {
+        filterTableByCell('releases', event.colDef.field, event.value);
+      }
     };
 
     // Destroy existing grid before creating new one
@@ -310,12 +403,6 @@ async function loadReleasesTable(customSQL) {
     releasesGrid = agGrid.createGrid(document.getElementById('releasesGrid'), gridOptions);
 
     setTableStatus('releases', 'success', `${data.length} rows`);
-
-    // Update stats card
-    const statEl = document.getElementById('stat-releases');
-    if (statEl) {
-      statEl.textContent = data.length;
-    }
   } catch (err) {
     console.error('Failed to load releases table:', err);
     setTableStatus('releases', 'error', err.message);
@@ -327,10 +414,16 @@ async function loadReleasesTable(customSQL) {
   }
 }
 
-async function runReleasesQuery() {
+async function runReleasesQuery(skipClearFilters = false) {
   console.log('Running releases query...');
   const queryText = document.getElementById('releasesQuery').value;
   console.log('Query:', queryText);
+
+  // Clear filters when running a manual query (but not when called from filterTableByCell)
+  if (!skipClearFilters) {
+    tableFilters.releases = {};
+  }
+
   await loadReleasesTable();
   updateURL();
 }
@@ -390,6 +483,9 @@ async function loadLibrariesTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 50,
+      onCellDoubleClicked: (event) => {
+        filterTableByCell('libraries', event.colDef.field, event.value);
+      }
     };
 
     // Destroy existing grid before creating new one
@@ -400,12 +496,6 @@ async function loadLibrariesTable(customSQL) {
     librariesGrid = agGrid.createGrid(document.getElementById('librariesGrid'), gridOptions);
 
     setTableStatus('libraries', 'success', `${data.length} rows`);
-
-    // Update stats card
-    const statEl = document.getElementById('stat-libraries');
-    if (statEl) {
-      statEl.textContent = data.length;
-    }
   } catch (err) {
     console.error('Failed to load libraries table:', err);
     setTableStatus('libraries', 'error', err.message);
@@ -417,10 +507,16 @@ async function loadLibrariesTable(customSQL) {
   }
 }
 
-async function runLibrariesQuery() {
+async function runLibrariesQuery(skipClearFilters = false) {
   console.log('Running libraries query...');
   const queryText = document.getElementById('librariesQuery').value;
   console.log('Query:', queryText);
+
+  // Clear filters when running a manual query (but not when called from filterTableByCell)
+  if (!skipClearFilters) {
+    tableFilters.libraries = {};
+  }
+
   await loadLibrariesTable();
   updateURL();
 }
@@ -476,6 +572,9 @@ async function loadSymbolsTable(customSQL) {
       },
       pagination: true,
       paginationPageSize: 100,
+      onCellDoubleClicked: (event) => {
+        filterTableByCell('symbols', event.colDef.field, event.value);
+      }
     };
 
     // Destroy existing grid before creating new one
@@ -486,12 +585,6 @@ async function loadSymbolsTable(customSQL) {
     symbolsGrid = agGrid.createGrid(document.getElementById('symbolsGrid'), gridOptions);
 
     setTableStatus('symbols', 'success', `${data.length} rows`);
-
-    // Update stats card
-    const statEl = document.getElementById('stat-symbols');
-    if (statEl) {
-      statEl.textContent = data.length;
-    }
   } catch (err) {
     console.error('Failed to load symbols table:', err);
     setTableStatus('symbols', 'error', err.message);
@@ -503,10 +596,16 @@ async function loadSymbolsTable(customSQL) {
   }
 }
 
-async function runSymbolsQuery() {
+async function runSymbolsQuery(skipClearFilters = false) {
   console.log('Running symbols query...');
   const queryText = document.getElementById('symbolsQuery').value;
   console.log('Query:', queryText);
+
+  // Clear filters when running a manual query (but not when called from filterTableByCell)
+  if (!skipClearFilters) {
+    tableFilters.symbols = {};
+  }
+
   await loadSymbolsTable();
   updateURL();
 }
@@ -516,6 +615,23 @@ window.runDriversQuery = runDriversQuery;
 window.runReleasesQuery = runReleasesQuery;
 window.runLibrariesQuery = runLibrariesQuery;
 window.runSymbolsQuery = runSymbolsQuery;
+
+async function loadInitialStats() {
+  try {
+    // Load stats from default queries (these remain fixed)
+    const driversCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('drivers.parquet')", 'drivers-count');
+    const releasesCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('releases.parquet')", 'releases-count');
+    const librariesCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('libraries.parquet')", 'libraries-count');
+    const symbolsCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('symbols.parquet')", 'symbols-count');
+
+    document.getElementById('stat-drivers').textContent = driversCount[0].count;
+    document.getElementById('stat-releases').textContent = releasesCount[0].count;
+    document.getElementById('stat-libraries').textContent = librariesCount[0].count;
+    document.getElementById('stat-symbols').textContent = symbolsCount[0].count;
+  } catch (err) {
+    console.error('Failed to load stats:', err);
+  }
+}
 
 async function init() {
   const loadingOverlay = document.getElementById('loadingOverlay');
@@ -529,6 +645,9 @@ async function init() {
 
     // Initialize DuckDB
     await initDuckDB();
+
+    // Load initial stats (these stay fixed)
+    await loadInitialStats();
 
     // Restore queries from URL before loading tables
     restoreQueriesFromURL();
