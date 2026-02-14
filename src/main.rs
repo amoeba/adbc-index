@@ -44,12 +44,6 @@ type DriverFirstLatest = HashMap<
     ),
 >;
 
-/// Context holding clients for accessing GitHub and PyPI APIs
-struct ClientContext {
-    gh_client: github::GitHubClient,
-    pypi_client: pypi::PyPIClient,
-}
-
 #[derive(Parser, Debug)]
 #[command(name = "adbc-index")]
 #[command(about = "ADBC Index - Index and analyze ADBC driver releases and libraries", long_about = None)]
@@ -200,6 +194,19 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                     }
 
                     let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(&tag);
+
+                    // Save release metadata for analyze command to use
+                    let release_dir = cache_dir.join(&driver.name).join(&sanitized_tag);
+                    std::fs::create_dir_all(&release_dir).ok();
+                    let metadata_path = release_dir.join(".release_metadata.json");
+                    if !metadata_path.exists() {
+                        let metadata = serde_json::json!({
+                            "tag_name": tag,
+                            "published_at": release.published_at,
+                            "html_url": release.html_url,
+                        });
+                        let _ = std::fs::write(&metadata_path, serde_json::to_string_pretty(&metadata).unwrap());
+                    }
 
                     for asset in &release.assets {
                         if std::env::var("DEBUG").is_ok() {
@@ -375,13 +382,6 @@ async fn analyze() -> Result<()> {
 
     use models::DriverRecord;
 
-    // Create GitHub and PyPI clients
-    let github_token = std::env::var("GITHUB_TOKEN").ok();
-    let ctx = Arc::new(ClientContext {
-        gh_client: github::GitHubClient::new(github_token)?,
-        pypi_client: pypi::PyPIClient::new()?,
-    });
-
     // Configure symbol filter - only extract symbols starting with "Adbc"
     let symbol_filter = symbols::SymbolFilter::default();
 
@@ -392,14 +392,12 @@ async fn analyze() -> Result<()> {
     // Process all drivers in parallel
     let mut tasks = FuturesUnordered::new();
     for driver in drivers {
-        let ctx = Arc::clone(&ctx);
         let cache_dir_clone = cache_dir.clone();
         let symbol_filter_clone = symbol_filter.clone();
         let progress_multi = analyze_progress.multi();
 
         let task = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(process_driver(
-                ctx,
                 driver,
                 cache_dir_clone,
                 symbol_filter_clone,
@@ -438,7 +436,8 @@ async fn analyze() -> Result<()> {
 
                 analyze_progress.inc(1);
             }
-            Ok(Err(_e)) => {
+            Ok(Err(e)) => {
+                eprintln!("  ⚠️  Processing error: {}", e);
                 analyze_progress.inc(1);
             }
             Err(e) => {
@@ -561,6 +560,12 @@ async fn analyze() -> Result<()> {
     let dist_dir = PathBuf::from("dist");
     std::fs::create_dir_all(&dist_dir)?;
 
+    // Collect driver names for validation before moving driver_records
+    let actual_driver_names: HashSet<String> = driver_records
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+
     let write_progress = progress::ProgressTracker::new(4, "Write");
     write_progress.set_message("Writing parquet files");
 
@@ -602,6 +607,36 @@ async fn analyze() -> Result<()> {
 
     write_progress.finish_with_message("Parquet files written");
 
+    // Validate that all drivers from config are present in output
+    println!("\n🔍 Validating output...");
+    let config_drivers = config::load_config(&config)?;
+    let expected_drivers: HashSet<String> = config_drivers
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+
+    let missing_drivers: Vec<String> = expected_drivers
+        .difference(&actual_driver_names)
+        .cloned()
+        .collect();
+
+    if !missing_drivers.is_empty() {
+        eprintln!("\n⚠️  Warning: The following drivers from drivers.toml are missing from the output:");
+        for driver in &missing_drivers {
+            eprintln!("  - {}", driver);
+        }
+        eprintln!("\nThis usually means:");
+        eprintln!("  1. No cached artifacts exist (run 'adbc-index download' first)");
+        eprintln!("  2. An error occurred during processing (check logs above)");
+        return Err(error::AdbcIndexError::Config(format!(
+            "Missing {} driver(s) in output: {}",
+            missing_drivers.len(),
+            missing_drivers.join(", ")
+        )));
+    }
+
+    println!("✓ All {} drivers from drivers.toml are present in output", config_drivers.len());
+
     Ok(())
 }
 
@@ -616,9 +651,105 @@ struct DriverProcessResult {
     library_count: usize,
 }
 
+/// Read releases from cache directory instead of fetching from API
+/// This allows analyze to work offline without GitHub/PyPI access
+fn read_releases_from_cache(
+    cache_dir: &Path,
+    driver_name: &str,
+) -> Result<Vec<github::types::Release>> {
+    use std::fs;
+
+    let driver_cache_dir = cache_dir.join(driver_name);
+
+    if !driver_cache_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut releases = Vec::new();
+
+    // Read all tag directories
+    let entries = fs::read_dir(&driver_cache_dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Skip non-directories and hidden files
+        if !path.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+
+        let tag_name = entry.file_name().to_string_lossy().to_string();
+
+        // Read release metadata if available
+        let metadata_path = path.join(".release_metadata.json");
+        let (published_at, html_url) = if metadata_path.exists() {
+            if let Ok(metadata_content) = fs::read_to_string(&metadata_path) {
+                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_content) {
+                    let published_at = metadata.get("published_at")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                    let html_url = metadata.get("html_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    (published_at, html_url)
+                } else {
+                    (None, String::new())
+                }
+            } else {
+                (None, String::new())
+            }
+        } else {
+            (None, String::new())
+        };
+
+        // Read artifacts in this tag directory
+        let mut assets = Vec::new();
+        let tag_entries = fs::read_dir(&path)?;
+        for asset_entry in tag_entries {
+            let asset_entry = asset_entry?;
+            let asset_path = asset_entry.path();
+
+            // Skip .sha256 files and hidden files
+            let filename = asset_entry.file_name().to_string_lossy().to_string();
+            if filename.ends_with(".sha256") || filename.starts_with('.') {
+                continue;
+            }
+
+            // Skip non-files
+            if !asset_path.is_file() {
+                continue;
+            }
+
+            let size = fs::metadata(&asset_path)?.len() as i64;
+
+            assets.push(github::types::Asset {
+                name: filename,
+                browser_download_url: String::new(), // Not needed for cache-based processing
+                url: None,
+                size,
+                download_count: 0,
+            });
+        }
+
+        // Only create release if it has assets
+        if !assets.is_empty() {
+            releases.push(github::types::Release {
+                tag_name: tag_name.clone(),
+                name: Some(tag_name.clone()),
+                published_at,
+                html_url,
+                assets,
+            });
+        }
+    }
+
+    Ok(releases)
+}
+
 /// Process a single driver and return its results
 async fn process_driver(
-    ctx: Arc<ClientContext>,
     driver: models::DriverConfig,
     cache_dir: PathBuf,
     symbol_filter: symbols::SymbolFilter,
@@ -640,18 +771,11 @@ async fn process_driver(
             .unwrap(),
     );
     driver_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
-    driver_spinner.set_message("Fetching releases");
+    driver_spinner.set_message("Reading releases from cache");
 
-    // Fetch releases based on source type
-    let mut releases = match &driver.source {
-        models::DriverSource::GitHub { owner, repo } => {
-            ctx.gh_client.fetch_releases(owner, repo).await?
-        }
-        models::DriverSource::PyPI { package } => {
-            let pypi_releases = ctx.pypi_client.fetch_releases(package).await?;
-            pypi::pypi_to_github_releases(pypi_releases, package)
-        }
-    };
+    // Read releases from cache instead of fetching from API
+    // This allows analyze to work offline without GitHub/PyPI access
+    let mut releases = read_releases_from_cache(&cache_dir, &driver.name)?;
 
     // Filter releases by version requirement if specified
     if let Some(ref version_req) = driver.version_req {
