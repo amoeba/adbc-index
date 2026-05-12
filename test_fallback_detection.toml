@@ -1,0 +1,9 @@
+# Test config without explicit language - should fall back to auto-detection
+
+[drivers.bigquery]
+url = "https://pypi.org/project/adbc-driver-bigquery/"
+# No language field - should auto-detect as Go
+
+[drivers.sqlite]
+url = "https://pypi.org/project/adbc-driver-sqlite/"
+# No language field - should auto-detect as C

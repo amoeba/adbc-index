@@ -94,6 +94,10 @@
     <h3>Unique Symbols per Driver</h3>
     {{ symbols_chart_svg | safe }}
   </div>
+  <div class="chart-container">
+    <h3>Drivers by Language</h3>
+    {{ language_chart_svg | safe }}
+  </div>
 </div>
 </div>
 

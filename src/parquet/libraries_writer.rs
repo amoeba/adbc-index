@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::models::LibraryRecord;
 use crate::parquet::libraries_schema::create_libraries_schema;
-use arrow::array::{ArrayRef, Int64Array, ListBuilder, StringArray, StringBuilder, TimestampMillisecondArray};
+use arrow::array::{ArrayRef, BooleanArray, Int64Array, ListBuilder, StringArray, StringBuilder, TimestampMillisecondArray};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -119,6 +119,12 @@ impl LibrariesWriter {
             .map(|r| Some(r.artifact_url.as_str()))
             .collect();
 
+        let languages: StringArray = self
+            .buffer
+            .iter()
+            .map(|r| r.language.as_deref())
+            .collect();
+
         let columns: Vec<ArrayRef> = vec![
             Arc::new(names),
             Arc::new(release_tags),
@@ -131,6 +137,10 @@ impl LibrariesWriter {
             Arc::new(library_sha256s),
             Arc::new(artifact_names),
             Arc::new(artifact_urls),
+            Arc::new(languages),
+            Arc::new(BooleanArray::from(
+                self.buffer.iter().map(|r| Some(r.is_latest)).collect::<Vec<_>>(),
+            )),
         ];
 
         Ok(RecordBatch::try_new(self.schema.clone(), columns)?)

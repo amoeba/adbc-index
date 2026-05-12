@@ -139,6 +139,9 @@ impl ReleasesWriter {
             Arc::new(arch),
             Arc::new(has_universal_binary),
             Arc::new(universal_binary_archs),
+            Arc::new(BooleanArray::from(
+                self.buffer.iter().map(|r| Some(r.is_latest)).collect::<Vec<_>>(),
+            )),
         ];
 
         Ok(RecordBatch::try_new(self.schema.clone(), columns)?)

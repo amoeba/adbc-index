@@ -4,6 +4,7 @@ mod csv_utils;
 mod download;
 mod error;
 mod github;
+mod language_detector;
 mod models;
 mod parquet;
 mod progress;
@@ -143,147 +144,181 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             eprintln!("DEBUG: Fetching releases for driver: {}", driver.name);
         }
 
-        // Fetch releases based on source type
-        let releases_result = match &driver.source {
-            models::DriverSource::GitHub { owner, repo } => {
-                if std::env::var("DEBUG").is_ok() {
-                    eprintln!("DEBUG: Fetching from GitHub: {}/{}", owner, repo);
-                }
-                gh_client.fetch_releases(owner, repo).await
+        let mut driver_new = 0;
+        let mut driver_cached = 0;
+        let mut source_errors = 0;
+
+        // Process each source for this driver
+        for source in &driver.sources {
+            let source_id = source.source_id();
+
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Processing source: {}", source_id);
             }
-            models::DriverSource::PyPI { package } => pypi_client
-                .fetch_releases(package)
-                .await
-                .map(|pypi_releases| pypi::pypi_to_github_releases(pypi_releases, package)),
-        };
 
-        if std::env::var("DEBUG").is_ok() {
-            eprintln!("DEBUG: Processing releases_result...");
-        }
-
-        match releases_result {
-            Ok(mut releases) => {
-                if std::env::var("DEBUG").is_ok() {
-                    eprintln!("DEBUG: Got {} releases, filtering...", releases.len());
+            // Fetch releases based on source type
+            let releases_result = match source {
+                models::DriverSource::GitHub { owner, repo } => {
+                    if std::env::var("DEBUG").is_ok() {
+                        eprintln!("DEBUG: Fetching from GitHub: {}/{}", owner, repo);
+                    }
+                    gh_client.fetch_releases(owner, repo).await
                 }
+                models::DriverSource::PyPI { package } => pypi_client
+                    .fetch_releases(package)
+                    .await
+                    .map(|pypi_releases| pypi::pypi_to_github_releases(pypi_releases, package)),
+            };
 
-                // Filter releases by version requirement if specified
-                if let Some(ref version_req) = driver.version_req {
-                    releases.retain(|release| {
-                        if let Some(version_str) = ReleaseRecord::parse_version(&release.tag_name) {
-                            if let Ok(version) = semver::Version::parse(&version_str) {
-                                return version_req.matches(&version);
+            if std::env::var("DEBUG").is_ok() {
+                eprintln!("DEBUG: Processing releases_result...");
+            }
+
+            match releases_result {
+                Ok(mut releases) => {
+                    if std::env::var("DEBUG").is_ok() {
+                        eprintln!("DEBUG: Got {} releases, filtering...", releases.len());
+                    }
+
+                    // Filter releases by version requirement if specified
+                    if let Some(ref version_req) = driver.version_req {
+                        releases.retain(|release| {
+                            if let Some(version_str) =
+                                ReleaseRecord::parse_version(&release.tag_name)
+                            {
+                                if let Ok(version) = semver::Version::parse(&version_str) {
+                                    return version_req.matches(&version);
+                                }
                             }
-                        }
-                        true
-                    });
-                }
-
-                let mut driver_new = 0;
-                let mut driver_cached = 0;
-
-                if std::env::var("DEBUG").is_ok() {
-                    eprintln!("DEBUG: Processing {} releases...", releases.len());
-                }
-
-                for release in &releases {
-                    let tag = release.tag_name.clone();
+                            true
+                        });
+                    }
 
                     if std::env::var("DEBUG").is_ok() {
-                        eprintln!("DEBUG: Processing release: {}", tag);
+                        eprintln!("DEBUG: Processing {} releases...", releases.len());
                     }
 
-                    let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(&tag);
+                    for release in &releases {
+                        let tag = release.tag_name.clone();
 
-                    // Save release metadata for analyze command to use
-                    let release_dir = cache_dir.join(&driver.name).join(&sanitized_tag);
-                    std::fs::create_dir_all(&release_dir).ok();
-                    let metadata_path = release_dir.join(".release_metadata.json");
-                    if !metadata_path.exists() {
-                        let metadata = serde_json::json!({
-                            "tag_name": tag,
-                            "published_at": release.published_at,
-                            "html_url": release.html_url,
-                        });
-                        let _ = std::fs::write(&metadata_path, serde_json::to_string_pretty(&metadata).unwrap());
-                    }
-
-                    for asset in &release.assets {
                         if std::env::var("DEBUG").is_ok() {
-                            eprintln!("DEBUG:   Asset: {}", asset.name);
+                            eprintln!("DEBUG: Processing release: {}", tag);
                         }
 
-                        // Skip artifacts that don't match the filter pattern
-                        if !driver.matches_artifact(&asset.name) {
-                            if std::env::var("DEBUG").is_ok() {
-                                eprintln!("DEBUG:   Skipping (doesn't match filter)");
-                            }
-                            continue;
-                        }
+                        let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(&tag);
 
-                        // Check if artifact already exists in cache with valid SHA256
-                        let cache_path = cache_dir
+                        // Save release metadata for analyze command to use
+                        let release_dir = cache_dir
                             .join(&driver.name)
-                            .join(&sanitized_tag)
-                            .join(&asset.name);
-
-                        let sha256_filename = format!("{}.sha256", asset.name);
-                        let sha256_path = cache_path.parent().unwrap().join(&sha256_filename);
-
-                        let already_cached = cache_path.exists() && sha256_path.exists();
-
-                        if std::env::var("DEBUG").is_ok() {
-                            eprintln!("DEBUG:   Cached: {}", already_cached);
+                            .join(&source_id)
+                            .join(&sanitized_tag);
+                        std::fs::create_dir_all(&release_dir).ok();
+                        let metadata_path = release_dir.join(".release_metadata.json");
+                        if !metadata_path.exists() {
+                            let metadata = serde_json::json!({
+                                "tag_name": tag,
+                                "published_at": release.published_at,
+                                "html_url": release.html_url,
+                            });
+                            let _ = std::fs::write(
+                                &metadata_path,
+                                serde_json::to_string_pretty(&metadata).unwrap(),
+                            );
                         }
 
-                        if already_cached {
-                            cached_count += 1;
-                            driver_cached += 1;
-                        } else {
+                        for asset in &release.assets {
                             if std::env::var("DEBUG").is_ok() {
-                                eprintln!("DEBUG:   Adding to download queue");
+                                eprintln!("DEBUG:   Asset: {}", asset.name);
                             }
 
-                            // Use API URL instead of browser_download_url for tags with slashes
-                            // GitHub has a bug where browser_download_url doesn't work for tags with /
-                            // The API url works: needs Accept: application/octet-stream header
-                            let (download_url, url_type) =
-                                if tag.contains('/') && asset.url.is_some() {
-                                    (asset.url.clone().unwrap(), "API")
-                                } else {
-                                    (asset.browser_download_url.clone(), "direct")
-                                };
-
-                            if std::env::var("DEBUG").is_ok() {
-                                eprintln!("DEBUG:   URL type: {} for {}", url_type, asset.name);
+                            // Skip artifacts that don't match the filter pattern
+                            if !driver.matches_artifact(&asset.name) {
+                                if std::env::var("DEBUG").is_ok() {
+                                    eprintln!("DEBUG:   Skipping (doesn't match filter)");
+                                }
+                                continue;
                             }
 
-                            download_tasks.push(download::DownloadTask {
-                                url: download_url,
-                                driver_name: driver.name.clone(),
-                                release_tag: tag.clone(),
-                                artifact_name: asset.name.clone(),
-                                expected_size: asset.size,
-                            });
-                            driver_new += 1;
+                            // Check if artifact already exists in cache with valid SHA256
+                            let cache_path = cache_dir
+                                .join(&driver.name)
+                                .join(&source_id)
+                                .join(&sanitized_tag)
+                                .join(&asset.name);
+
+                            let sha256_filename = format!("{}.sha256", asset.name);
+                            let sha256_path = cache_path.parent().unwrap().join(&sha256_filename);
+
+                            let already_cached = cache_path.exists() && sha256_path.exists();
+
+                            if std::env::var("DEBUG").is_ok() {
+                                eprintln!("DEBUG:   Cached: {}", already_cached);
+                            }
+
+                            if already_cached {
+                                cached_count += 1;
+                                driver_cached += 1;
+                            } else {
+                                if std::env::var("DEBUG").is_ok() {
+                                    eprintln!("DEBUG:   Adding to download queue");
+                                }
+
+                                // Use API URL instead of browser_download_url for tags with slashes
+                                // GitHub has a bug where browser_download_url doesn't work for tags with /
+                                // The API url works: needs Accept: application/octet-stream header
+                                let (download_url, url_type) =
+                                    if tag.contains('/') && asset.url.is_some() {
+                                        (asset.url.clone().unwrap(), "API")
+                                    } else {
+                                        (asset.browser_download_url.clone(), "direct")
+                                    };
+
+                                if std::env::var("DEBUG").is_ok() {
+                                    eprintln!("DEBUG:   URL type: {} for {}", url_type, asset.name);
+                                }
+
+                                download_tasks.push(download::DownloadTask {
+                                    url: download_url,
+                                    driver_name: driver.name.clone(),
+                                    source_id: source_id.clone(),
+                                    release_tag: tag.clone(),
+                                    artifact_name: asset.name.clone(),
+                                    expected_size: asset.size,
+                                });
+                                driver_new += 1;
+                            }
                         }
                     }
                 }
-
-                if std::env::var("DEBUG").is_ok() {
-                    eprintln!(
-                        "DEBUG: Finishing driver progress: {} new, {} cached",
-                        driver_new, driver_cached
-                    );
+                Err(e) => {
+                    eprintln!("  ⚠️  Source error ({}): {}", source_id, e);
+                    source_errors += 1;
                 }
-                driver_progress
-                    .finish_with_message(format!("{} new, {} cached", driver_new, driver_cached));
             }
-            Err(e) => {
-                eprintln!("  ⚠️  Download error: {}", e);
-                driver_progress.finish_with_message(format!("Error: {}", e));
-                driver_fetch_errors += 1;
-            }
+        }
+
+        if std::env::var("DEBUG").is_ok() {
+            eprintln!(
+                "DEBUG: Finishing driver progress: {} new, {} cached, {} source errors",
+                driver_new, driver_cached, source_errors
+            );
+        }
+
+        if source_errors == driver.sources.len() {
+            // All sources failed
+            driver_progress.finish_with_message("Error: all sources failed".to_string());
+            driver_fetch_errors += 1;
+        } else {
+            driver_progress.finish_with_message(format!(
+                "{} new, {} cached{}",
+                driver_new,
+                driver_cached,
+                if source_errors > 0 {
+                    format!(", {} source errors", source_errors)
+                } else {
+                    String::new()
+                }
+            ));
         }
 
         if std::env::var("DEBUG").is_ok() {
@@ -478,6 +513,65 @@ async fn analyze() -> Result<()> {
             ));
     }
 
+    // Determine the latest release_tag per driver (by published_date)
+    let mut latest_tag_per_driver: HashMap<String, (String, chrono::DateTime<chrono::Utc>)> =
+        HashMap::new();
+    for ((name, tag), (_, published_date, _, _, _, _, _)) in &release_data {
+        latest_tag_per_driver
+            .entry(name.clone())
+            .and_modify(|(existing_tag, existing_date)| {
+                if published_date > existing_date {
+                    *existing_tag = tag.clone();
+                    *existing_date = *published_date;
+                }
+            })
+            .or_insert((tag.clone(), *published_date));
+    }
+    let latest_tag_per_driver: HashMap<String, String> = latest_tag_per_driver
+        .into_iter()
+        .map(|(name, (tag, _))| (name, tag))
+        .collect();
+
+    // Stamp is_latest on library and symbol records
+    for record in &mut library_records {
+        record.is_latest = latest_tag_per_driver
+            .get(&record.name)
+            .map(|t| t == &record.release_tag)
+            .unwrap_or(false);
+    }
+    for record in &mut symbol_records {
+        record.is_latest = latest_tag_per_driver
+            .get(&record.name)
+            .map(|t| t == &record.release_tag)
+            .unwrap_or(false);
+    }
+
+    // Aggregate languages from library records to determine primary language for each driver
+    let mut driver_languages: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    for lib in &library_records {
+        if let Some(ref lang) = lib.language {
+            driver_languages
+                .entry(lib.name.clone())
+                .or_insert_with(HashMap::new)
+                .entry(lang.clone())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+    }
+
+    // Determine primary language (most common) for each driver
+    let primary_languages: HashMap<String, String> = driver_languages
+        .into_iter()
+        .map(|(driver, lang_counts)| {
+            let primary = lang_counts
+                .into_iter()
+                .max_by_key(|(_, count)| *count)
+                .map(|(lang, _)| lang)
+                .unwrap_or_else(|| "unknown".to_string());
+            (driver, primary)
+        })
+        .collect();
+
     // Create driver records
     let mut driver_records: Vec<DriverRecord> = driver_stats
         .iter()
@@ -509,6 +603,7 @@ async fn analyze() -> Result<()> {
                 first_release_version,
                 latest_release_date,
                 latest_release_version,
+                language: primary_languages.get(name).cloned(),
             }
         })
         .collect();
@@ -535,8 +630,8 @@ async fn analyze() -> Result<()> {
                 };
 
                 models::ReleaseRecord {
-                    name,
-                    release_tag,
+                    name: name.clone(),
+                    release_tag: release_tag.clone(),
                     version,
                     published_date,
                     release_url,
@@ -544,6 +639,10 @@ async fn analyze() -> Result<()> {
                     arch,
                     has_universal_binary,
                     universal_binary_archs,
+                    is_latest: latest_tag_per_driver
+                        .get(&name)
+                        .map(|t| t == &release_tag)
+                        .unwrap_or(false),
                 }
             },
         )
@@ -657,6 +756,7 @@ fn read_releases_from_cache(
     cache_dir: &Path,
     driver_name: &str,
 ) -> Result<Vec<github::types::Release>> {
+    use std::collections::HashMap;
     use std::fs;
 
     let driver_cache_dir = cache_dir.join(driver_name);
@@ -665,85 +765,111 @@ fn read_releases_from_cache(
         return Ok(Vec::new());
     }
 
-    let mut releases = Vec::new();
+    // Map from tag_name to release data
+    // This allows merging assets from multiple sources for the same tag
+    let mut releases_map: HashMap<String, github::types::Release> = HashMap::new();
 
-    // Read all tag directories
-    let entries = fs::read_dir(&driver_cache_dir)?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
+    // Read all source directories
+    let source_entries = fs::read_dir(&driver_cache_dir)?;
+    for source_entry in source_entries {
+        let source_entry = source_entry?;
+        let source_path = source_entry.path();
 
         // Skip non-directories and hidden files
-        if !path.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+        if !source_path.is_dir() || source_entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
 
-        let tag_name = entry.file_name().to_string_lossy().to_string();
+        // Read all tag directories within this source
+        let tag_entries = fs::read_dir(&source_path)?;
+        for tag_entry in tag_entries {
+            let tag_entry = tag_entry?;
+            let tag_path = tag_entry.path();
 
-        // Read release metadata if available
-        let metadata_path = path.join(".release_metadata.json");
-        let (published_at, html_url) = if metadata_path.exists() {
-            if let Ok(metadata_content) = fs::read_to_string(&metadata_path) {
-                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_content) {
-                    let published_at = metadata.get("published_at")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&chrono::Utc));
-                    let html_url = metadata.get("html_url")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    (published_at, html_url)
+            // Skip non-directories and hidden files
+            if !tag_path.is_dir() || tag_entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+
+            let tag_name = tag_entry.file_name().to_string_lossy().to_string();
+
+            // Read release metadata if available
+            let metadata_path = tag_path.join(".release_metadata.json");
+            let (published_at, html_url) = if metadata_path.exists() {
+                if let Ok(metadata_content) = fs::read_to_string(&metadata_path) {
+                    if let Ok(metadata) =
+                        serde_json::from_str::<serde_json::Value>(&metadata_content)
+                    {
+                        let published_at = metadata
+                            .get("published_at")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                            .map(|dt| dt.with_timezone(&chrono::Utc));
+                        let html_url = metadata
+                            .get("html_url")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_default();
+                        (published_at, html_url)
+                    } else {
+                        (None, String::new())
+                    }
                 } else {
                     (None, String::new())
                 }
             } else {
                 (None, String::new())
+            };
+
+            // Read artifacts in this tag directory
+            let mut assets = Vec::new();
+            let asset_entries = fs::read_dir(&tag_path)?;
+            for asset_entry in asset_entries {
+                let asset_entry = asset_entry?;
+                let asset_path = asset_entry.path();
+
+                // Skip .sha256 files and hidden files
+                let filename = asset_entry.file_name().to_string_lossy().to_string();
+                if filename.ends_with(".sha256") || filename.starts_with('.') {
+                    continue;
+                }
+
+                // Skip non-files
+                if !asset_path.is_file() {
+                    continue;
+                }
+
+                let size = fs::metadata(&asset_path)?.len() as i64;
+
+                assets.push(github::types::Asset {
+                    name: filename,
+                    browser_download_url: String::new(), // Not needed for cache-based processing
+                    url: None,
+                    size,
+                    download_count: 0,
+                });
             }
-        } else {
-            (None, String::new())
-        };
 
-        // Read artifacts in this tag directory
-        let mut assets = Vec::new();
-        let tag_entries = fs::read_dir(&path)?;
-        for asset_entry in tag_entries {
-            let asset_entry = asset_entry?;
-            let asset_path = asset_entry.path();
-
-            // Skip .sha256 files and hidden files
-            let filename = asset_entry.file_name().to_string_lossy().to_string();
-            if filename.ends_with(".sha256") || filename.starts_with('.') {
-                continue;
+            // Merge assets with existing release or create new release
+            if !assets.is_empty() {
+                releases_map
+                    .entry(tag_name.clone())
+                    .and_modify(|existing_release| {
+                        // Merge assets from this source with existing assets
+                        existing_release.assets.extend(assets.clone());
+                    })
+                    .or_insert_with(|| github::types::Release {
+                        tag_name: tag_name.clone(),
+                        name: Some(tag_name.clone()),
+                        published_at,
+                        html_url,
+                        assets,
+                    });
             }
-
-            // Skip non-files
-            if !asset_path.is_file() {
-                continue;
-            }
-
-            let size = fs::metadata(&asset_path)?.len() as i64;
-
-            assets.push(github::types::Asset {
-                name: filename,
-                browser_download_url: String::new(), // Not needed for cache-based processing
-                url: None,
-                size,
-                download_count: 0,
-            });
-        }
-
-        // Only create release if it has assets
-        if !assets.is_empty() {
-            releases.push(github::types::Release {
-                tag_name: tag_name.clone(),
-                name: Some(tag_name.clone()),
-                published_at,
-                html_url,
-                assets,
-            });
         }
     }
+
+    let releases: Vec<github::types::Release> = releases_map.into_values().collect();
 
     Ok(releases)
 }
@@ -831,7 +957,7 @@ async fn process_driver(
                         continue;
                     }
 
-                    // Add to library records
+                    // Add to library records (language will be added later)
                     library_records.push(LibraryRecord {
                         name: driver.name.clone(),
                         release_tag: tag.clone(),
@@ -844,10 +970,28 @@ async fn process_driver(
                         library_sha256: lib_info.sha256.clone().unwrap_or_default(),
                         artifact_name: asset.name.clone(),
                         artifact_url: asset.browser_download_url.clone(),
+                        language: None,
+                        is_latest: false, // set after all releases are collected
                     });
 
                     // Extract symbols and analyze stubs in a single pass
                     if let Some(ref lib_path) = lib_info.path {
+                        // Use explicit language from config if provided, otherwise detect
+                        let language = if let Some(ref explicit_lang) = driver.language {
+                            Some(explicit_lang.clone())
+                        } else {
+                            // Detect language from binary strings (works for stripped binaries)
+                            // This extracts printable strings from the binary's data sections
+                            symbols::extract_binary_strings(lib_path)
+                                .ok()
+                                .and_then(|strings| language_detector::detect_language(&strings))
+                        };
+
+                        // Update the last library record with language
+                        if let Some(last_record) = library_records.last_mut() {
+                            last_record.language = language;
+                        }
+
                         match symbols::extract_symbols_and_stubs(lib_path, &symbol_filter) {
                             Ok((syms, stub_analyses)) => {
                                 // Build map of symbol -> stub analysis
@@ -876,6 +1020,7 @@ async fn process_driver(
                                         return_status: stub_info.and_then(|s| {
                                             s.status_code.map(|c| c.name().to_string())
                                         }),
+                                        is_latest: false, // set after all releases are collected
                                     });
                                 }
                             }
@@ -954,10 +1099,15 @@ async fn process_driver(
         }
     }
 
-    // Extract repo owner and name based on source type
-    let (repo_owner, repo_name) = match &driver.source {
-        models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
-        models::DriverSource::PyPI { package } => ("pypi".to_string(), package.clone()),
+    // Extract repo owner and name from first source
+    // For multi-source drivers, we use the first source for display purposes
+    let (repo_owner, repo_name) = if let Some(first_source) = driver.sources.first() {
+        match first_source {
+            models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
+            models::DriverSource::PyPI { package } => ("pypi".to_string(), package.clone()),
+        }
+    } else {
+        ("unknown".to_string(), "unknown".to_string())
     };
 
     driver_spinner.finish_with_message(format!(
@@ -995,20 +1145,47 @@ fn extract_and_find_library(
 ) -> Option<LibraryInfo> {
     use flate2::read::GzDecoder;
     use sha2::{Digest, Sha256};
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::{Read, Write};
     use tar::Archive;
     use zip::ZipArchive;
 
     let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(release_tag);
-    let artifact_path = cache_dir
-        .join(driver_name)
-        .join(&sanitized_tag)
-        .join(artifact_name);
 
-    if !artifact_path.exists() {
-        return None;
-    }
+    // Search for the artifact across all source directories
+    // The cache structure is: cache_dir/driver_name/source_id/sanitized_tag/artifact_name
+    let driver_cache_dir = cache_dir.join(driver_name);
+
+    let artifact_path = if driver_cache_dir.exists() {
+        let mut found_path = None;
+
+        // Try to read source directories
+        if let Ok(source_entries) = fs::read_dir(&driver_cache_dir) {
+            for source_entry in source_entries {
+                if let Ok(source_entry) = source_entry {
+                    let source_path = source_entry.path();
+
+                    // Skip non-directories and hidden files
+                    if !source_path.is_dir() || source_entry.file_name().to_string_lossy().starts_with('.') {
+                        continue;
+                    }
+
+                    // Check if artifact exists in this source directory
+                    let candidate_path = source_path.join(&sanitized_tag).join(artifact_name);
+                    if candidate_path.exists() {
+                        found_path = Some(candidate_path);
+                        break;
+                    }
+                }
+            }
+        }
+
+        found_path
+    } else {
+        None
+    };
+
+    let artifact_path = artifact_path?;
 
     // Create unique temp directory for extracted libraries
     let temp_base = std::env::temp_dir();
@@ -1218,6 +1395,11 @@ async fn html() -> Result<()> {
         "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') GROUP BY name ORDER BY symbol_count DESC"
     )?;
 
+    // Query drivers by language
+    let language_chart_csv = query_duckdb(
+        "SELECT language, COUNT(*) as driver_count FROM read_parquet('dist/drivers.parquet') GROUP BY language ORDER BY driver_count DESC, language"
+    )?;
+
     println!("🔨 Generating HTML...");
 
     // Generate charts
@@ -1227,6 +1409,8 @@ async fn html() -> Result<()> {
         svg::generate_box_plot(&libraries_chart_csv, "Library Size by Driver (MB)");
     let symbols_chart_svg =
         svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
+    let language_chart_svg =
+        svg::generate_bar_chart(&language_chart_csv, "Drivers by Language");
 
     // Get file sizes for download links
     let drivers_size = csv_utils::format_file_size(std::fs::metadata(&drivers_path)?.len());
@@ -1252,6 +1436,7 @@ async fn html() -> Result<()> {
     context.insert("releases_chart_svg", &releases_chart_svg);
     context.insert("libraries_chart_svg", &libraries_chart_svg);
     context.insert("symbols_chart_svg", &symbols_chart_svg);
+    context.insert("language_chart_svg", &language_chart_svg);
     context.insert("drivers_size", &drivers_size);
     context.insert("releases_size", &releases_size);
     context.insert("libraries_size", &libraries_size);

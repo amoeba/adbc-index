@@ -21,5 +21,6 @@ pub fn create_drivers_schema() -> Arc<Schema> {
             false,
         ),
         Field::new("latest_release_version", DataType::Utf8, true),
+        Field::new("language", DataType::Utf8, true),
     ]))
 }

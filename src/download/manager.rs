@@ -22,6 +22,7 @@ pub struct DownloadManager {
 pub struct DownloadTask {
     pub url: String,
     pub driver_name: String,
+    pub source_id: String,
     pub release_tag: String,
     pub artifact_name: String,
     pub expected_size: i64,
@@ -227,6 +228,7 @@ impl DownloadManager {
         let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(&task.release_tag);
         self.cache_dir
             .join(&task.driver_name)
+            .join(&task.source_id)
             .join(&sanitized_tag)
             .join(&task.artifact_name)
     }

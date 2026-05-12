@@ -107,6 +107,12 @@ impl DriversWriter {
             .map(|r| r.latest_release_version.as_deref())
             .collect();
 
+        let languages: StringArray = self
+            .buffer
+            .iter()
+            .map(|r| r.language.as_deref())
+            .collect();
+
         let columns: Vec<ArrayRef> = vec![
             Arc::new(names),
             Arc::new(repo_owners),
@@ -117,6 +123,7 @@ impl DriversWriter {
             Arc::new(first_release_versions),
             Arc::new(latest_release_dates),
             Arc::new(latest_release_versions),
+            Arc::new(languages),
         ];
 
         Ok(RecordBatch::try_new(self.schema.clone(), columns)?)

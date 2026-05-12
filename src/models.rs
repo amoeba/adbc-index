@@ -7,13 +7,24 @@ pub enum DriverSource {
     PyPI { package: String },
 }
 
+impl DriverSource {
+    /// Get a unique identifier for this source to use in cache directory naming
+    pub fn source_id(&self) -> String {
+        match self {
+            DriverSource::GitHub { owner, repo } => format!("github_{owner}_{repo}"),
+            DriverSource::PyPI { package } => format!("pypi_{package}"),
+        }
+    }
+}
+
 /// Configuration for a single driver
 #[derive(Debug, Clone)]
 pub struct DriverConfig {
     pub name: String,
-    pub source: DriverSource,
+    pub sources: Vec<DriverSource>,
     pub version_req: Option<semver::VersionReq>,
     pub artifact_filter: Option<String>,
+    pub language: Option<String>,
 }
 
 impl DriverConfig {
@@ -67,6 +78,8 @@ pub struct ReleaseRecord {
     pub has_universal_binary: bool,
     /// Architectures supported by universal binaries in this release (if any)
     pub universal_binary_archs: Option<Vec<String>>,
+    /// True if this is the latest release for this driver
+    pub is_latest: bool,
 }
 
 /// A library record - one row per shared library
@@ -83,6 +96,9 @@ pub struct LibraryRecord {
     pub library_sha256: String,
     pub artifact_name: String,
     pub artifact_url: String,
+    pub language: Option<String>,
+    /// True if this library belongs to the latest release for this driver
+    pub is_latest: bool,
 }
 
 /// A driver record - one row per driver
@@ -97,6 +113,7 @@ pub struct DriverRecord {
     pub first_release_version: Option<String>,
     pub latest_release_date: DateTime<Utc>,
     pub latest_release_version: Option<String>,
+    pub language: Option<String>,
 }
 
 /// A symbol record - one row per exported symbol
@@ -113,6 +130,8 @@ pub struct SymbolRecord {
     pub is_stub: bool,
     pub constant_return: Option<i32>,
     pub return_status: Option<String>,
+    /// True if this symbol belongs to the latest release for this driver
+    pub is_latest: bool,
 }
 
 impl ReleaseRecord {
@@ -290,12 +309,13 @@ mod tests {
     fn test_artifact_filter_prefix() {
         let config = DriverConfig {
             name: "test".to_string(),
-            source: DriverSource::GitHub {
+            sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
-            },
+            }],
             version_req: None,
             artifact_filter: Some("lib*".to_string()),
+            language: None,
         };
 
         assert!(config.matches_artifact("libduckdb.so"));
@@ -308,12 +328,13 @@ mod tests {
     fn test_artifact_filter_suffix() {
         let config = DriverConfig {
             name: "test".to_string(),
-            source: DriverSource::GitHub {
+            sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
-            },
+            }],
             version_req: None,
             artifact_filter: Some("*.zip".to_string()),
+            language: None,
         };
 
         assert!(config.matches_artifact("libduckdb-osx-universal.zip"));
@@ -326,12 +347,13 @@ mod tests {
     fn test_artifact_filter_contains() {
         let config = DriverConfig {
             name: "test".to_string(),
-            source: DriverSource::GitHub {
+            sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
-            },
+            }],
             version_req: None,
             artifact_filter: Some("*linux*".to_string()),
+            language: None,
         };
 
         assert!(config.matches_artifact("libduckdb-linux-amd64.zip"));
@@ -344,12 +366,13 @@ mod tests {
     fn test_artifact_filter_glob() {
         let config = DriverConfig {
             name: "test".to_string(),
-            source: DriverSource::GitHub {
+            sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
-            },
+            }],
             version_req: None,
             artifact_filter: Some("libduckdb-*.zip".to_string()),
+            language: None,
         };
 
         assert!(config.matches_artifact("libduckdb-osx-universal.zip"));
@@ -362,12 +385,13 @@ mod tests {
     fn test_artifact_filter_none() {
         let config = DriverConfig {
             name: "test".to_string(),
-            source: DriverSource::GitHub {
+            sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
-            },
+            }],
             version_req: None,
             artifact_filter: None,
+            language: None,
         };
 
         // No filter means everything matches

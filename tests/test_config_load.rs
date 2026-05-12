@@ -8,7 +8,10 @@ fn test_load_drivers_toml() {
 
     println!("\nLoaded {} drivers:", drivers.len());
     for driver in &drivers {
-        println!("  - {}: {:?}", driver.name, driver.source);
+        println!("  - {}: {} source(s)", driver.name, driver.sources.len());
+        for (i, source) in driver.sources.iter().enumerate() {
+            println!("    Source {}: {:?}", i + 1, source);
+        }
         if let Some(ref version_req) = driver.version_req {
             println!("    Version requirement: {}", version_req);
         }

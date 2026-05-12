@@ -14,11 +14,13 @@ enum DriverValue {
 
 #[derive(Deserialize)]
 struct DetailedDriverConfig {
-    url: String,
+    urls: Vec<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
     artifact_filter: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -34,8 +36,8 @@ pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
     let mut configs = Vec::new();
 
     for (name, driver_value) in config.drivers {
-        let (url, version_req, artifact_filter) = match driver_value {
-            DriverValue::Simple(url) => (url, None, None),
+        let (urls, version_req, artifact_filter, language) = match driver_value {
+            DriverValue::Simple(url) => (vec![url], None, None, None),
             DriverValue::Detailed(detailed) => {
                 let version_req = if let Some(version_str) = &detailed.version {
                     Some(semver::VersionReq::parse(version_str).map_err(|e| {
@@ -47,16 +49,36 @@ pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
                 } else {
                     None
                 };
-                (detailed.url, version_req, detailed.artifact_filter)
+
+                if detailed.urls.is_empty() {
+                    return Err(AdbcIndexError::Config(format!(
+                        "Driver '{}' must have at least one URL in 'urls' field",
+                        name
+                    )));
+                }
+
+                (
+                    detailed.urls,
+                    version_req,
+                    detailed.artifact_filter,
+                    detailed.language,
+                )
             }
         };
 
-        let source = parse_driver_url(&url)?;
+        // Parse all URLs into sources
+        let mut sources = Vec::new();
+        for url in urls {
+            let source = parse_driver_url(&url)?;
+            sources.push(source);
+        }
+
         configs.push(DriverConfig {
             name,
-            source,
+            sources,
             version_req,
             artifact_filter,
+            language,
         });
     }
 
@@ -176,6 +198,20 @@ mod tests {
     }
 
     #[test]
+    fn test_source_id() {
+        let github_source = DriverSource::GitHub {
+            owner: "apache".to_string(),
+            repo: "arrow-adbc".to_string(),
+        };
+        assert_eq!(github_source.source_id(), "github_apache_arrow-adbc");
+
+        let pypi_source = DriverSource::PyPI {
+            package: "adbc-driver-sqlite".to_string(),
+        };
+        assert_eq!(pypi_source.source_id(), "pypi_adbc-driver-sqlite");
+    }
+
+    #[test]
     fn test_version_requirement_parsing() {
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -193,6 +229,7 @@ sqlite = "https://pypi.org/project/adbc-driver-sqlite/"
         let configs = load_config(file.path()).unwrap();
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "sqlite");
+        assert_eq!(configs[0].sources.len(), 1);
         assert!(configs[0].version_req.is_none());
         assert!(configs[0].artifact_filter.is_none());
 
@@ -202,7 +239,7 @@ sqlite = "https://pypi.org/project/adbc-driver-sqlite/"
             file,
             r#"
 [drivers.duckdb]
-url = "https://github.com/duckdb/duckdb"
+urls = ["https://github.com/duckdb/duckdb"]
 version = ">=0.8.0"
 "#
         )
@@ -210,6 +247,7 @@ version = ">=0.8.0"
         let configs = load_config(file.path()).unwrap();
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "duckdb");
+        assert_eq!(configs[0].sources.len(), 1);
         assert!(configs[0].version_req.is_some());
         assert!(configs[0].artifact_filter.is_none());
         let version_req = configs[0].version_req.as_ref().unwrap();
@@ -223,7 +261,7 @@ version = ">=0.8.0"
             file,
             r#"
 [drivers.duckdb]
-url = "https://github.com/duckdb/duckdb"
+urls = ["https://github.com/duckdb/duckdb"]
 version = ">=0.8.0"
 artifact_filter = "libduckdb-*"
 "#
@@ -232,6 +270,7 @@ artifact_filter = "libduckdb-*"
         let configs = load_config(file.path()).unwrap();
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "duckdb");
+        assert_eq!(configs[0].sources.len(), 1);
         assert!(configs[0].version_req.is_some());
         assert!(configs[0].artifact_filter.is_some());
         assert_eq!(configs[0].artifact_filter.as_ref().unwrap(), "libduckdb-*");
@@ -239,6 +278,36 @@ artifact_filter = "libduckdb-*"
         // Test artifact matching
         assert!(configs[0].matches_artifact("libduckdb-osx-universal.zip"));
         assert!(!configs[0].matches_artifact("duckdb_cli-linux.zip"));
+
+        // Test multiple URLs format
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[drivers.bigquery]
+urls = ["https://pypi.org/project/adbc-driver-bigquery/", "https://github.com/adbc-drivers/bigquery"]
+language = "go"
+"#
+        )
+        .unwrap();
+        let configs = load_config(file.path()).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "bigquery");
+        assert_eq!(configs[0].sources.len(), 2);
+        assert_eq!(configs[0].language.as_ref().unwrap(), "go");
+
+        // Test empty URLs array should error
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[drivers.empty]
+urls = []
+"#
+        )
+        .unwrap();
+        let result = load_config(file.path());
+        assert!(result.is_err());
     }
 
     #[test]

@@ -29,5 +29,6 @@ pub fn create_releases_schema() -> Arc<Schema> {
             DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             true,
         ),
+        Field::new("is_latest", DataType::Boolean, false),
     ]))
 }

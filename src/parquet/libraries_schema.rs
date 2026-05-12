@@ -23,5 +23,7 @@ pub fn create_libraries_schema() -> Arc<Schema> {
         Field::new("library_sha256", DataType::Utf8, false),
         Field::new("artifact_name", DataType::Utf8, false),
         Field::new("artifact_url", DataType::Utf8, false),
+        Field::new("language", DataType::Utf8, true),
+        Field::new("is_latest", DataType::Boolean, false),
     ]))
 }

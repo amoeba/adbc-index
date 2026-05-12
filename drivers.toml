@@ -1,20 +1,84 @@
-[drivers]
-bigquery = "https://pypi.org/project/adbc-driver-bigquery/"
-clickhouse = "https://github.com/adbc-drivers/clickhouse"
-databricks = "https://github.com/adbc-drivers/databricks"
-flightsql = "https://pypi.org/project/adbc-driver-flightsql/"
-mssql = "https://github.com/adbc-drivers/microsoft"
-mysql = "https://github.com/adbc-drivers/mysql"
-postgresql = "https://pypi.org/project/adbc-driver-postgresql/"
-redshift = "https://github.com/adbc-drivers/amazon"
-snowflake = "https://pypi.org/project/adbc-driver-snowflake/"
-sqlite = "https://pypi.org/project/adbc-driver-sqlite/"
-trino = "https://github.com/adbc-drivers/trino"
-oracle = "https://github.com/adbc-drivers/oracle"
-teradata = "https://github.com/adbc-drivers/teradata"
+# ADBC Drivers Configuration
+#
+# Each driver can be specified in two formats:
+# 1. Simple: driver_name = "url" (single URL)
+# 2. Detailed: [drivers.driver_name] with urls (array), version, artifact_filter, and language
+#
+# Language field is optional. If not specified, language will be auto-detected from binaries.
+
+[drivers.bigquery]
+urls = [
+  "https://pypi.org/project/adbc-driver-bigquery/",
+  "https://github.com/adbc-drivers/bigquery"
+]
+language = "go"
+
+[drivers.clickhouse]
+urls = ["https://github.com/adbc-drivers/clickhouse"]
+language = "rust"
+
+[drivers.databricks]
+urls = ["https://github.com/adbc-drivers/databricks"]
+language = "go"
+
+[drivers.exasol]
+urls = ["https://github.com/adbc-drivers/exasol"]
+language = "rust"
+
+[drivers.flightsql]
+urls = ["https://pypi.org/project/adbc-driver-flightsql/"]
+language = "go"
+
+[drivers.mssql]
+urls = ["https://github.com/adbc-drivers/microsoft"]
+language = "go"
+
+[drivers.mysql]
+urls = ["https://github.com/adbc-drivers/mysql"]
+language = "go"
+
+[drivers.postgresql]
+urls = ["https://pypi.org/project/adbc-driver-postgresql/"]
+language = "c++"
+
+[drivers.redshift]
+urls = ["https://github.com/adbc-drivers/amazon"]
+language = "go"
+
+[drivers.singlestore]
+urls = ["https://github.com/adbc-drivers/singlestore"]
+language = "go"
+
+[drivers.snowflake]
+urls = [
+  "https://pypi.org/project/adbc-driver-snowflake/",
+  "https://github.com/adbc-drivers/snowflake"
+]
+language = "go"
+
+[drivers.sqlite]
+urls = ["https://pypi.org/project/adbc-driver-sqlite/"]
+language = "c++"
+
+[drivers.trino]
+urls = ["https://github.com/adbc-drivers/trino"]
+language = "go"
+
+[drivers.oracle]
+urls = ["https://github.com/adbc-drivers/oracle"]
+language = "go"
+
+[drivers.teradata]
+urls = ["https://github.com/adbc-drivers/teradata"]
+language = "rust"
+
+[drivers.sap-hana]
+urls = ["https://github.com/adbc-drivers/sap-hana"]
+language = "go"
 
 # DuckDB - Main DuckDB library exports ADBC symbols starting from v0.8.0
 [drivers.duckdb]
-url = "https://github.com/duckdb/duckdb"
+urls = ["https://github.com/duckdb/duckdb"]
 version = ">=0.8.0"
 artifact_filter = "libduckdb-*"
+language = "c++"

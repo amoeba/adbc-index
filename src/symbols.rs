@@ -45,6 +45,46 @@ impl Default for SymbolFilter {
     }
 }
 
+/// Extract strings from binary data sections (for language detection)
+/// This is useful for stripped binaries where symbols are removed but strings remain
+pub fn extract_binary_strings<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
+    let path = path.as_ref();
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+
+    // Limit buffer size to prevent memory issues (100MB max)
+    if buffer.len() > 100 * 1024 * 1024 {
+        return Err(crate::error::AdbcIndexError::Config(format!(
+            "Binary file too large: {} ({} bytes)",
+            path.display(),
+            buffer.len()
+        )));
+    }
+
+    // Extract printable strings from the binary (min length 4 characters)
+    let mut strings = Vec::new();
+    let mut current_string = String::new();
+
+    for &byte in &buffer {
+        if byte.is_ascii_graphic() || byte == b' ' {
+            current_string.push(byte as char);
+        } else if byte == 0 || !byte.is_ascii() {
+            if current_string.len() >= 4 {
+                strings.push(current_string.clone());
+            }
+            current_string.clear();
+        }
+    }
+
+    // Add the last string if it's long enough
+    if current_string.len() >= 4 {
+        strings.push(current_string);
+    }
+
+    Ok(strings)
+}
+
 /// Extract exported symbols from a shared library
 #[allow(dead_code)]
 pub fn extract_symbols<P: AsRef<Path>>(path: P, filter: &SymbolFilter) -> Result<Vec<String>> {
