@@ -1,0 +1,71 @@
+name: Check for New DBC Drivers
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Daily at 9 AM UTC
+  workflow_dispatch:
+
+jobs:
+  check-drivers:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: columnar-tech/setup-dbc@v1
+        with:
+          skip-drivers: true
+
+      - name: Get current driver list
+        id: current
+        run: |
+          dbc search | awk '{print $1}' | sort > /tmp/current-drivers.txt
+          cat /tmp/current-drivers.txt
+
+      - name: Check for new drivers
+        id: diff
+        run: |
+          grep '^\[drivers\.' drivers.toml | sed 's/^\[drivers\.\(.*\)\]$/\1/' | sort > /tmp/known-drivers.txt
+
+          NEW=$(comm -13 /tmp/known-drivers.txt /tmp/current-drivers.txt)
+          echo "new_drivers<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NEW" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR for new drivers
+        if: steps.diff.outputs.new_drivers != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW="${{ steps.diff.outputs.new_drivers }}"
+          BRANCH="add-drivers-$(date +%Y%m%d)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          # Append a stub entry for each new driver
+          echo "" >> drivers.toml
+          while IFS= read -r driver; do
+            printf '\n[drivers.%s]\nurls = ["# TODO: add source URL"]\n' "$driver" >> drivers.toml
+          done <<< "$NEW"
+
+          git add drivers.toml
+          git commit -m "chore: stub entries for new DBC drivers: $(echo "$NEW" | tr '\n' ' ' | sed 's/ $//')"
+          git push origin "$BRANCH"
+
+          BODY="The following drivers appeared in \`dbc search\` but were missing from \`drivers.toml\`. Stub entries have been added — fill in the source URLs before merging.
+
+          $(echo "$NEW" | sed 's/^/- /')
+
+          Run \`dbc info <driver>\` for details on each."
+
+          gh pr create \
+            --title "Add stub entries for new DBC drivers: $(echo "$NEW" | tr '\n' ' ' | sed 's/ $//')" \
+            --body "$BODY" \
+            --base main \
+            --head "$BRANCH"
