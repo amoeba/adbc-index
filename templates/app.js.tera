@@ -110,9 +110,8 @@ async function initDuckDB() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       const buffer = await response.arrayBuffer();
-      await db.registerFileBuffer(file.name, new Uint8Array(buffer));
-
       const sizeKB = (buffer.byteLength / 1024).toFixed(1);
+      await db.registerFileBuffer(file.name, new Uint8Array(buffer));
       updateLoadingStep(`fetch-${file.name}`, 'success', `${file.name} loaded (${sizeKB} KB)`);
 
       // Update download link with file size
