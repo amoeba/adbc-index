@@ -357,7 +357,7 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
     let margin_left = 100.0;
     let margin_right = 80.0;
     let margin_top = 60.0;  // Increased for legend
-    let margin_bottom = 10.0;
+    let margin_bottom = 30.0;
     let plot_width = width - margin_left - margin_right;
 
     let total_boxes = data.len() as f64;
@@ -526,6 +526,44 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         ));
         svg.push('\n');
     }
+
+    // Add x-axis scale at the bottom
+    let axis_y = margin_top + (total_boxes * (box_height + box_spacing)) + 5.0;
+    let unit = if is_bytes { "MB" } else { "" };
+
+    // Determine nice tick interval
+    let raw_interval = scaled_max / 5.0;
+    let magnitude = 10.0_f64.powf(raw_interval.log10().floor());
+    let nice_interval = (raw_interval / magnitude).ceil() * magnitude;
+
+    let mut tick_val = 0.0;
+    while tick_val <= scaled_max * 1.01 {
+        let tick_x = margin_left + (tick_val / scaled_max) * plot_width;
+        // Tick mark
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#546e7a\" stroke-width=\"1\"/>",
+            tick_x, axis_y, tick_x, axis_y + 4.0
+        ));
+        // Label
+        let label = if nice_interval >= 1.0 {
+            format!("{:.0}{}", tick_val, unit)
+        } else {
+            format!("{:.1}{}", tick_val, unit)
+        };
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#546e7a\" text-anchor=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
+            tick_x, axis_y + 14.0, label
+        ));
+        svg.push('\n');
+        tick_val += nice_interval;
+    }
+
+    // Axis line
+    svg.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#546e7a\" stroke-width=\"1\"/>",
+        margin_left, axis_y, margin_left + plot_width, axis_y
+    ));
+    svg.push('\n');
 
     // Add gradient definition
     svg.insert_str(
