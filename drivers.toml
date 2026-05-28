@@ -21,6 +21,10 @@ language = "rust"
 urls = ["https://github.com/adbc-drivers/databricks"]
 language = "go"
 
+[drivers.datafusion]
+urls = ["https://github.com/adbc-drivers/datafusion"]
+language = "rust"
+
 [drivers.exasol]
 urls = ["https://github.com/adbc-drivers/exasol"]
 language = "rust"
@@ -75,6 +79,14 @@ language = "rust"
 [drivers.sap-hana]
 urls = ["https://github.com/adbc-drivers/sap-hana"]
 language = "go"
+
+[drivers.athena]
+urls = ["https://github.com/adbc-drivers/amazon-athena"]
+language = "rust"
+
+[drivers.quack]
+urls = ["https://github.com/adbc-drivers/quack"]
+language = "c++"
 
 # DuckDB - Main DuckDB library exports ADBC symbols starting from v0.8.0
 [drivers.duckdb]

@@ -1369,7 +1369,12 @@ async fn html() -> Result<()> {
 
     // Query library size statistics per driver (for box plot)
     let libraries_chart_csv = query_duckdb(
-        "WITH stats AS ( \
+        "WITH latest_tag AS ( \
+           SELECT name, release_tag \
+           FROM read_parquet('dist/libraries.parquet') \
+           QUALIFY ROW_NUMBER() OVER (PARTITION BY name ORDER BY published_date DESC) = 1 \
+         ), \
+         stats AS ( \
            SELECT name, \
            MIN(library_size_bytes) as min_size, \
            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY library_size_bytes) as q1, \
@@ -1380,11 +1385,14 @@ async fn html() -> Result<()> {
            GROUP BY name \
          ), \
          latest AS ( \
-           SELECT name, library_size_bytes as latest_size \
-           FROM read_parquet('dist/libraries.parquet') \
-           QUALIFY ROW_NUMBER() OVER (PARTITION BY name ORDER BY published_date DESC) = 1 \
+           SELECT l.name, \
+           MIN(l.library_size_bytes) as latest_min, \
+           MAX(l.library_size_bytes) as latest_max \
+           FROM read_parquet('dist/libraries.parquet') l \
+           JOIN latest_tag lt ON l.name = lt.name AND l.release_tag = lt.release_tag \
+           GROUP BY l.name \
          ) \
-         SELECT s.name, s.min_size, s.q1, s.median, s.q3, s.max_size, l.latest_size \
+         SELECT s.name, s.min_size, s.q1, s.median, s.q3, s.max_size, l.latest_min, l.latest_max \
          FROM stats s \
          JOIN latest l ON s.name = l.name \
          ORDER BY s.median DESC"

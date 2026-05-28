@@ -321,8 +321,8 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
 /// Generate a horizontal box and whisker plot
 pub fn generate_box_plot(csv: &str, title: &str) -> String {
     // Parse CSV to extract names and box plot statistics
-    // Expected format: name,min,q1,median,q3,max,latest
-    let mut data: Vec<(String, f64, f64, f64, f64, f64, f64)> = Vec::new();
+    // Expected format: name,min,q1,median,q3,max,latest_min,latest_max
+    let mut data: Vec<(String, f64, f64, f64, f64, f64, f64, f64)> = Vec::new();
 
     for (idx, line) in csv.lines().enumerate() {
         if idx == 0 {
@@ -330,17 +330,18 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         }
 
         let cells = csv_utils::parse_csv_line(line);
-        if cells.len() >= 7 {
+        if cells.len() >= 8 {
             let name = &cells[0];
-            if let (Ok(min), Ok(q1), Ok(median), Ok(q3), Ok(max), Ok(latest)) = (
+            if let (Ok(min), Ok(q1), Ok(median), Ok(q3), Ok(max), Ok(latest_min), Ok(latest_max)) = (
                 cells[1].parse::<f64>(),
                 cells[2].parse::<f64>(),
                 cells[3].parse::<f64>(),
                 cells[4].parse::<f64>(),
                 cells[5].parse::<f64>(),
                 cells[6].parse::<f64>(),
+                cells[7].parse::<f64>(),
             ) {
-                data.push((name.clone(), min, q1, median, q3, max, latest));
+                data.push((name.clone(), min, q1, median, q3, max, latest_min, latest_max));
             }
         }
     }
@@ -365,7 +366,7 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
     // Find global min and max for scaling
     let global_max = data
         .iter()
-        .map(|(_, _, _, _, _, max, _)| *max)
+        .map(|(_, _, _, _, _, max, _, _)| *max)
         .fold(0.0, f64::max);
 
     // Convert to MB for library sizes
@@ -426,20 +427,20 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
     ));
     svg.push('\n');
 
-    // Latest release
+    // Latest release (yellow box)
     let latest_legend_x = median_legend_x + legend_spacing;
     svg.push_str(&format!(
-        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffd700\" stroke-width=\"2.5\"/>",
-        latest_legend_x, legend_y - 5.0, latest_legend_x, legend_y + 5.0
+        "<rect x=\"{}\" y=\"{}\" width=\"15\" height=\"10\" fill=\"#ffd700\" fill-opacity=\"0.35\" stroke=\"#ffd700\" stroke-width=\"1.5\"/>",
+        latest_legend_x, legend_y - 5.0
     ));
     svg.push_str(&format!(
         "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">Latest</text>",
-        latest_legend_x + 8.0, legend_y
+        latest_legend_x + 20.0, legend_y
     ));
     svg.push('\n');
 
     // Draw box plots
-    for (i, (name, min, q1, median, q3, max, latest)) in data.iter().enumerate() {
+    for (i, (name, min, q1, median, q3, max, latest_min, latest_max)) in data.iter().enumerate() {
         let y = margin_top + (i as f64 * (box_height + box_spacing));
         let center_y = y + box_height / 2.0;
 
@@ -449,7 +450,8 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         let scaled_median = median / divisor;
         let scaled_q3 = q3 / divisor;
         let scaled_max_val = max / divisor;
-        let scaled_latest = latest / divisor;
+        let scaled_latest_min = latest_min / divisor;
+        let scaled_latest_max = latest_max / divisor;
 
         // Calculate positions
         let min_x = margin_left + (scaled_min / scaled_max) * plot_width;
@@ -457,9 +459,11 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         let median_x = margin_left + (scaled_median / scaled_max) * plot_width;
         let q3_x = margin_left + (scaled_q3 / scaled_max) * plot_width;
         let max_x = margin_left + (scaled_max_val / scaled_max) * plot_width;
-        let latest_x = margin_left + (scaled_latest / scaled_max) * plot_width;
+        let latest_min_x = margin_left + (scaled_latest_min / scaled_max) * plot_width;
+        let latest_max_x = margin_left + (scaled_latest_max / scaled_max) * plot_width;
 
         let box_width = q3_x - q1_x;
+        let latest_box_width = (latest_max_x - latest_min_x).max(2.0); // min 2px so single-platform is visible
 
         // Whisker line (min to max)
         svg.push_str(&format!(
@@ -496,10 +500,10 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         ));
         svg.push('\n');
 
-        // Latest release line (yellow)
+        // Latest release box (transparent yellow overlay)
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffd700\" stroke-width=\"2.5\"/>",
-            latest_x, y - 2.0, latest_x, y + box_height + 2.0
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ffd700\" fill-opacity=\"0.35\" stroke=\"#ffd700\" stroke-width=\"1.5\" rx=\"2\"/>",
+            latest_min_x, y - 2.0, latest_box_width, box_height + 4.0
         ));
         svg.push('\n');
 
