@@ -769,103 +769,132 @@ fn read_releases_from_cache(
     // This allows merging assets from multiple sources for the same tag
     let mut releases_map: HashMap<String, github::types::Release> = HashMap::new();
 
-    // Read all source directories
-    let source_entries = fs::read_dir(&driver_cache_dir)?;
-    for source_entry in source_entries {
-        let source_entry = source_entry?;
-        let source_path = source_entry.path();
+    // Collect all tag directories to process.
+    // Handles two cache layouts:
+    //   Old (flat):   cache/{driver}/{version}/artifacts...
+    //   New (nested): cache/{driver}/{source}/{version}/artifacts...
+    // We distinguish them by checking if the first-level directory contains
+    // a .release_metadata.json (old style version dir) or only subdirectories (new style source dir).
+    let mut tag_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+    let top_entries = fs::read_dir(&driver_cache_dir)?;
+    for top_entry in top_entries {
+        let top_entry = top_entry?;
+        let top_path = top_entry.path();
 
         // Skip non-directories and hidden files
-        if !source_path.is_dir() || source_entry.file_name().to_string_lossy().starts_with('.') {
+        if !top_path.is_dir() || top_entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
 
-        // Read all tag directories within this source
-        let tag_entries = fs::read_dir(&source_path)?;
-        for tag_entry in tag_entries {
-            let tag_entry = tag_entry?;
-            let tag_path = tag_entry.path();
+        // Detect old-style flat layout: version dir contains .release_metadata.json or artifact files directly
+        let has_metadata = top_path.join(".release_metadata.json").exists();
+        let has_artifact_files = if !has_metadata {
+            // Check if directory contains any regular files (not just subdirectories)
+            fs::read_dir(&top_path)?
+                .filter_map(|e| e.ok())
+                .any(|e| e.path().is_file() && !e.file_name().to_string_lossy().starts_with('.'))
+        } else {
+            false
+        };
 
-            // Skip non-directories and hidden files
-            if !tag_path.is_dir() || tag_entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
+        if has_metadata || has_artifact_files {
+            // Old-style: this IS a version/tag directory
+            tag_dirs.push(top_path);
+        } else {
+            // New-style: this is a source directory containing version subdirectories
+            let sub_entries = fs::read_dir(&top_path)?;
+            for sub_entry in sub_entries {
+                let sub_entry = sub_entry?;
+                let sub_path = sub_entry.path();
+                if !sub_path.is_dir() || sub_entry.file_name().to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                tag_dirs.push(sub_path);
             }
+        }
+    }
 
-            let tag_name = tag_entry.file_name().to_string_lossy().to_string();
+    // Process each tag directory
+    for tag_path in tag_dirs {
+        let tag_name = tag_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
-            // Read release metadata if available
-            let metadata_path = tag_path.join(".release_metadata.json");
-            let (published_at, html_url) = if metadata_path.exists() {
-                if let Ok(metadata_content) = fs::read_to_string(&metadata_path) {
-                    if let Ok(metadata) =
-                        serde_json::from_str::<serde_json::Value>(&metadata_content)
-                    {
-                        let published_at = metadata
-                            .get("published_at")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                            .map(|dt| dt.with_timezone(&chrono::Utc));
-                        let html_url = metadata
-                            .get("html_url")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_default();
-                        (published_at, html_url)
-                    } else {
-                        (None, String::new())
-                    }
+        // Read release metadata if available
+        let metadata_path = tag_path.join(".release_metadata.json");
+        let (published_at, html_url) = if metadata_path.exists() {
+            if let Ok(metadata_content) = fs::read_to_string(&metadata_path) {
+                if let Ok(metadata) =
+                    serde_json::from_str::<serde_json::Value>(&metadata_content)
+                {
+                    let published_at = metadata
+                        .get("published_at")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                    let html_url = metadata
+                        .get("html_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    (published_at, html_url)
                 } else {
                     (None, String::new())
                 }
             } else {
                 (None, String::new())
-            };
+            }
+        } else {
+            (None, String::new())
+        };
 
-            // Read artifacts in this tag directory
-            let mut assets = Vec::new();
-            let asset_entries = fs::read_dir(&tag_path)?;
-            for asset_entry in asset_entries {
-                let asset_entry = asset_entry?;
-                let asset_path = asset_entry.path();
+        // Read artifacts in this tag directory
+        let mut assets = Vec::new();
+        let asset_entries = fs::read_dir(&tag_path)?;
+        for asset_entry in asset_entries {
+            let asset_entry = asset_entry?;
+            let asset_path = asset_entry.path();
 
-                // Skip .sha256 files and hidden files
-                let filename = asset_entry.file_name().to_string_lossy().to_string();
-                if filename.ends_with(".sha256") || filename.starts_with('.') {
-                    continue;
-                }
+            // Skip .sha256 files and hidden files
+            let filename = asset_entry.file_name().to_string_lossy().to_string();
+            if filename.ends_with(".sha256") || filename.starts_with('.') {
+                continue;
+            }
 
-                // Skip non-files
-                if !asset_path.is_file() {
-                    continue;
-                }
+            // Skip non-files
+            if !asset_path.is_file() {
+                continue;
+            }
 
-                let size = fs::metadata(&asset_path)?.len() as i64;
+            let size = fs::metadata(&asset_path)?.len() as i64;
 
-                assets.push(github::types::Asset {
-                    name: filename,
-                    browser_download_url: String::new(), // Not needed for cache-based processing
-                    url: None,
-                    size,
-                    download_count: 0,
+            assets.push(github::types::Asset {
+                name: filename,
+                browser_download_url: String::new(), // Not needed for cache-based processing
+                url: None,
+                size,
+                download_count: 0,
+            });
+        }
+
+        // Merge assets with existing release or create new release
+        if !assets.is_empty() {
+            releases_map
+                .entry(tag_name.clone())
+                .and_modify(|existing_release| {
+                    // Merge assets from this source with existing assets
+                    existing_release.assets.extend(assets.clone());
+                })
+                .or_insert_with(|| github::types::Release {
+                    tag_name: tag_name.clone(),
+                    name: Some(tag_name.clone()),
+                    published_at,
+                    html_url,
+                    assets,
                 });
-            }
-
-            // Merge assets with existing release or create new release
-            if !assets.is_empty() {
-                releases_map
-                    .entry(tag_name.clone())
-                    .and_modify(|existing_release| {
-                        // Merge assets from this source with existing assets
-                        existing_release.assets.extend(assets.clone());
-                    })
-                    .or_insert_with(|| github::types::Release {
-                        tag_name: tag_name.clone(),
-                        name: Some(tag_name.clone()),
-                        published_at,
-                        html_url,
-                        assets,
-                    });
-            }
         }
     }
 
