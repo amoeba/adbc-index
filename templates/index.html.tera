@@ -54,6 +54,10 @@
     <div class="stat-label">Total Symbols</div>
     <div class="stat-value" id="stat-symbols">—</div>
   </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Dependencies</div>
+    <div class="stat-value" id="stat-dependencies">—</div>
+  </div>
 </div>
 
 <div class="tabs">
@@ -71,6 +75,9 @@
   </button>
   <button class="tab-button" data-tab="symbols">
     Symbols<span class="status-indicator" id="symbolsStatus"></span>
+  </button>
+  <button class="tab-button" data-tab="dependencies">
+    Dependencies<span class="status-indicator" id="dependenciesStatus"></span>
   </button>
 </div>
 
@@ -97,6 +104,10 @@
   <div class="chart-container">
     <h3>Drivers by Language</h3>
     {{ language_chart_svg | safe }}
+  </div>
+  <div class="chart-container">
+    <h3>Non-System Dependencies per Driver</h3>
+    {{ dependencies_chart_svg | safe }}
   </div>
 </div>
 </div>
@@ -178,6 +189,26 @@
     <div id="symbolsError" class="query-error"></div>
   </div>
   <div id="symbolsGrid" class="ag-theme-alpine-dark"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-dependencies">
+<h2>Dependencies</h2>
+<div class="download-inline">
+  <span class="download-prefix">Download</span>
+  <a href="dependencies.parquet" class="download-link" download>dependencies.parquet ({{ dependencies_size }})</a>
+</div>
+
+<div class="table-container">
+  <div class="sql-query-box">
+    <label class="sql-query-label">SQL Query</label>
+    <textarea id="dependenciesQuery" placeholder="SELECT * FROM read_parquet('dependencies.parquet')">SELECT * FROM read_parquet('dependencies.parquet') WHERE is_latest = true</textarea>
+    <div class="sql-query-buttons">
+      <button class="sql-query-button" onclick="runDependenciesQuery()">Run Query ⏎</button>
+    </div>
+    <div id="dependenciesError" class="query-error"></div>
+  </div>
+  <div id="dependenciesGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
 

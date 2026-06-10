@@ -1,6 +1,7 @@
 mod artifact_parser;
 mod config;
 mod csv_utils;
+mod dependencies;
 mod download;
 mod error;
 mod github;
@@ -446,6 +447,7 @@ async fn analyze() -> Result<()> {
     // Collect results from all tasks
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
+    let mut dependency_records = Vec::new();
     let mut release_data: ReleaseDataMap = HashMap::new();
     let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
 
@@ -457,6 +459,7 @@ async fn analyze() -> Result<()> {
                 // Merge results
                 library_records.extend(result.library_records);
                 symbol_records.extend(result.symbol_records);
+                dependency_records.extend(result.dependency_records);
 
                 // Merge release data
                 for (key, value) in result.release_data {
@@ -483,10 +486,11 @@ async fn analyze() -> Result<()> {
     }
 
     analyze_progress.finish_with_message(&format!(
-        "{} drivers, {} libraries, {} symbols",
+        "{} drivers, {} libraries, {} symbols, {} dependencies",
         driver_stats.len(),
         library_records.len(),
-        symbol_records.len()
+        symbol_records.len(),
+        dependency_records.len()
     ));
 
     // Calculate first and latest release for each driver
@@ -532,7 +536,7 @@ async fn analyze() -> Result<()> {
         .map(|(name, (tag, _))| (name, tag))
         .collect();
 
-    // Stamp is_latest on library and symbol records
+    // Stamp is_latest on library, symbol, and dependency records
     for record in &mut library_records {
         record.is_latest = latest_tag_per_driver
             .get(&record.name)
@@ -540,6 +544,12 @@ async fn analyze() -> Result<()> {
             .unwrap_or(false);
     }
     for record in &mut symbol_records {
+        record.is_latest = latest_tag_per_driver
+            .get(&record.name)
+            .map(|t| t == &record.release_tag)
+            .unwrap_or(false);
+    }
+    for record in &mut dependency_records {
         record.is_latest = latest_tag_per_driver
             .get(&record.name)
             .map(|t| t == &record.release_tag)
@@ -665,7 +675,7 @@ async fn analyze() -> Result<()> {
         .map(|d| d.name.clone())
         .collect();
 
-    let write_progress = progress::ProgressTracker::new(4, "Write");
+    let write_progress = progress::ProgressTracker::new(5, "Write");
     write_progress.set_message("Writing parquet files");
 
     // Write drivers.parquet
@@ -702,6 +712,15 @@ async fn analyze() -> Result<()> {
         symbols_writer.add_record(record)?;
     }
     symbols_writer.close()?;
+    write_progress.inc(1);
+
+    // Write dependencies.parquet
+    let dependencies_output = dist_dir.join("dependencies.parquet");
+    let mut dependencies_writer = parquet::DependenciesWriter::new(&dependencies_output)?;
+    for record in dependency_records {
+        dependencies_writer.add_record(record)?;
+    }
+    dependencies_writer.close()?;
     write_progress.inc(1);
 
     write_progress.finish_with_message("Parquet files written");
@@ -743,6 +762,7 @@ async fn analyze() -> Result<()> {
 struct DriverProcessResult {
     library_records: Vec<models::LibraryRecord>,
     symbol_records: Vec<models::SymbolRecord>,
+    dependency_records: Vec<models::DependencyRecord>,
     release_data: ReleaseDataVec,
     driver_name: String,
     repo_owner: String,
@@ -910,11 +930,12 @@ async fn process_driver(
     symbol_filter: symbols::SymbolFilter,
     progress_multi: Arc<indicatif::MultiProgress>,
 ) -> Result<DriverProcessResult> {
-    use models::{LibraryRecord, SymbolRecord};
+    use models::{DependencyRecord, LibraryRecord, SymbolRecord};
     use std::collections::HashSet;
 
     let mut library_records = Vec::new();
     let mut symbol_records = Vec::new();
+    let mut dependency_records = Vec::new();
     let mut release_data_vec: ReleaseDataVec = Vec::new();
     let mut library_count = 0;
 
@@ -1058,6 +1079,30 @@ async fn process_driver(
                             }
                         }
 
+                        // Extract dynamic library dependencies
+                        match dependencies::extract_dependencies(lib_path) {
+                            Ok(deps) => {
+                                for (idx, dep) in deps.iter().enumerate() {
+                                    dependency_records.push(DependencyRecord {
+                                        name: driver.name.clone(),
+                                        release_tag: tag.clone(),
+                                        version: version.clone(),
+                                        os: os.clone(),
+                                        arch: arch.clone(),
+                                        library_name: lib_info.name.clone(),
+                                        dependency: dep.clone(),
+                                        dependency_basename: dependencies::dependency_basename(dep),
+                                        dependency_index: idx as i64,
+                                        is_system: dependencies::is_system_dependency(dep, os),
+                                        is_latest: false, // set after all releases are collected
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
+
                         // Clean up temp file after symbol extraction
                         let _ = std::fs::remove_file(lib_path);
                         // Also try to clean up the temp directory (will succeed if empty)
@@ -1148,6 +1193,7 @@ async fn process_driver(
     Ok(DriverProcessResult {
         library_records,
         symbol_records,
+        dependency_records,
         release_data: release_data_vec,
         driver_name: driver.name,
         repo_owner,
@@ -1371,6 +1417,7 @@ async fn html() -> Result<()> {
     let releases_path = output_dir.join("releases.parquet");
     let libraries_path = output_dir.join("libraries.parquet");
     let symbols_path = output_dir.join("symbols.parquet");
+    let dependencies_path = output_dir.join("dependencies.parquet");
     let output_file = output_dir.join("index.html");
 
     // Check if parquet files exist
@@ -1378,6 +1425,7 @@ async fn html() -> Result<()> {
         || !releases_path.exists()
         || !libraries_path.exists()
         || !symbols_path.exists()
+        || !dependencies_path.exists()
     {
         return Err(error::AdbcIndexError::Config(
             "Parquet files not found. Run 'adbc-index build' first.".to_string(),
@@ -1437,6 +1485,10 @@ async fn html() -> Result<()> {
         "SELECT language, COUNT(*) as driver_count FROM read_parquet('dist/drivers.parquet') GROUP BY language ORDER BY driver_count DESC, language"
     )?;
 
+    let dependencies_chart_csv = query_duckdb(
+        "SELECT name, COUNT(*) as dep_count FROM read_parquet('dist/dependencies.parquet') WHERE is_latest = true AND is_system = false GROUP BY name ORDER BY dep_count DESC"
+    )?;
+
     println!("🔨 Generating HTML...");
 
     // Generate charts
@@ -1448,12 +1500,15 @@ async fn html() -> Result<()> {
         svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
     let language_chart_svg =
         svg::generate_bar_chart(&language_chart_csv, "Drivers by Language");
+    let dependencies_chart_svg =
+        svg::generate_bar_chart(&dependencies_chart_csv, "Non-System Dependencies per Driver");
 
     // Get file sizes for download links
     let drivers_size = csv_utils::format_file_size(std::fs::metadata(&drivers_path)?.len());
     let releases_size = csv_utils::format_file_size(std::fs::metadata(&releases_path)?.len());
     let libraries_size = csv_utils::format_file_size(std::fs::metadata(&libraries_path)?.len());
     let symbols_size = csv_utils::format_file_size(std::fs::metadata(&symbols_path)?.len());
+    let dependencies_size = csv_utils::format_file_size(std::fs::metadata(&dependencies_path)?.len());
 
     // Initialize Tera template engine
     let tera = match Tera::new("templates/**/*.tera") {
@@ -1474,10 +1529,12 @@ async fn html() -> Result<()> {
     context.insert("libraries_chart_svg", &libraries_chart_svg);
     context.insert("symbols_chart_svg", &symbols_chart_svg);
     context.insert("language_chart_svg", &language_chart_svg);
+    context.insert("dependencies_chart_svg", &dependencies_chart_svg);
     context.insert("drivers_size", &drivers_size);
     context.insert("releases_size", &releases_size);
     context.insert("libraries_size", &libraries_size);
     context.insert("symbols_size", &symbols_size);
+    context.insert("dependencies_size", &dependencies_size);
 
     // Render template
     let html = match tera.render("index.html.tera", &context) {

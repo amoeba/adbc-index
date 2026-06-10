@@ -5,7 +5,8 @@ let tableFilters = {
   drivers: {},
   releases: {},
   libraries: {},
-  symbols: {}
+  symbols: {},
+  dependencies: {}
 };
 
 function updateLoadingStep(id, status, message) {
@@ -99,7 +100,8 @@ async function initDuckDB() {
     { name: 'drivers.parquet', id: 'drivers' },
     { name: 'releases.parquet', id: 'releases' },
     { name: 'libraries.parquet', id: 'libraries' },
-    { name: 'symbols.parquet', id: 'symbols' }
+    { name: 'symbols.parquet', id: 'symbols' },
+    { name: 'dependencies.parquet', id: 'dependencies' }
   ];
 
   for (const file of files) {
@@ -215,7 +217,8 @@ function filterTableByCell(tableName, columnName, value) {
     'drivers': runDriversQuery,
     'releases': runReleasesQuery,
     'libraries': runLibrariesQuery,
-    'symbols': runSymbolsQuery
+    'symbols': runSymbolsQuery,
+    'dependencies': runDependenciesQuery
   };
 
   const runFunction = runFunctions[tableName];
@@ -609,11 +612,105 @@ async function runSymbolsQuery(skipClearFilters = false) {
   updateURL();
 }
 
+let dependenciesGrid = null;
+
+async function loadDependenciesTable(customSQL) {
+  setTableStatus('dependencies', 'loading', 'Loading...');
+  hideQueryError('dependencies');
+
+  try {
+    const sql = customSQL || document.getElementById('dependenciesQuery').value;
+    const data = await queryDuckDB(sql, 'dependencies');
+
+    if (!data || data.length === 0) {
+      setTableStatus('dependencies', 'error', 'No data');
+      showQueryError('dependencies', 'Query returned no results');
+      if (dependenciesGrid) {
+        dependenciesGrid.destroy();
+        dependenciesGrid = null;
+      }
+      return;
+    }
+
+    // Dynamically create column definitions from the data
+    const columnDefs = Object.keys(data[0]).map(key => ({
+      field: key,
+      headerName: key,
+      filter: true,
+      sortable: true,
+      flex: 1,
+      minWidth: 100,
+      cellRenderer: (params) => {
+        // Handle null/undefined values
+        if (params.value === null || params.value === undefined) {
+          return '';
+        }
+        // Special rendering for boolean fields
+        if ((key === 'is_system' || key === 'is_latest') && typeof params.value === 'boolean') {
+          return params.value ? '\u2713' : '\u2717';
+        }
+        // Format array fields
+        if (Array.isArray(params.value)) {
+          return params.value.join(', ');
+        }
+        return String(params.value);
+      }
+    }));
+
+    const gridOptions = {
+      columnDefs: columnDefs,
+      rowData: data,
+      defaultColDef: {
+        resizable: true,
+        sortable: true,
+        filter: true
+      },
+      pagination: true,
+      paginationPageSize: 100,
+      onCellDoubleClicked: (event) => {
+        filterTableByCell('dependencies', event.colDef.field, event.value);
+      }
+    };
+
+    // Destroy existing grid before creating new one
+    if (dependenciesGrid) {
+      dependenciesGrid.destroy();
+    }
+
+    dependenciesGrid = agGrid.createGrid(document.getElementById('dependenciesGrid'), gridOptions);
+
+    setTableStatus('dependencies', 'success', `${data.length} rows`);
+  } catch (err) {
+    console.error('Failed to load dependencies table:', err);
+    setTableStatus('dependencies', 'error', err.message);
+    showQueryError('dependencies', err.message);
+    if (dependenciesGrid) {
+      dependenciesGrid.destroy();
+      dependenciesGrid = null;
+    }
+  }
+}
+
+async function runDependenciesQuery(skipClearFilters = false) {
+  console.log('Running dependencies query...');
+  const queryText = document.getElementById('dependenciesQuery').value;
+  console.log('Query:', queryText);
+
+  // Clear filters when running a manual query (but not when called from filterTableByCell)
+  if (!skipClearFilters) {
+    tableFilters.dependencies = {};
+  }
+
+  await loadDependenciesTable();
+  updateURL();
+}
+
 // Expose query functions to global scope for inline onclick handlers
 window.runDriversQuery = runDriversQuery;
 window.runReleasesQuery = runReleasesQuery;
 window.runLibrariesQuery = runLibrariesQuery;
 window.runSymbolsQuery = runSymbolsQuery;
+window.runDependenciesQuery = runDependenciesQuery;
 
 async function loadInitialStats() {
   try {
@@ -622,11 +719,13 @@ async function loadInitialStats() {
     const releasesCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('releases.parquet')", 'releases-count');
     const librariesCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('libraries.parquet')", 'libraries-count');
     const symbolsCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('symbols.parquet')", 'symbols-count');
+    const dependenciesCount = await queryDuckDB("SELECT COUNT(*) as count FROM read_parquet('dependencies.parquet')", 'dependencies-count');
 
     document.getElementById('stat-drivers').textContent = driversCount[0].count;
     document.getElementById('stat-releases').textContent = releasesCount[0].count;
     document.getElementById('stat-libraries').textContent = librariesCount[0].count;
     document.getElementById('stat-symbols').textContent = symbolsCount[0].count;
+    document.getElementById('stat-dependencies').textContent = dependenciesCount[0].count;
   } catch (err) {
     console.error('Failed to load stats:', err);
   }
@@ -658,7 +757,8 @@ async function init() {
       loadDriversTable(),
       loadReleasesTable(),
       loadLibrariesTable(),
-      loadSymbolsTable()
+      loadSymbolsTable(),
+      loadDependenciesTable()
     ]);
 
     // Check for any failures
@@ -670,7 +770,7 @@ async function init() {
       const firstError = failures[0].reason;
       showError(
         'Failed to Load Tables',
-        `${failures.length} of 4 tables failed to load. Please check the console for details.`,
+        `${failures.length} of 5 tables failed to load. Please check the console for details.`,
         firstError.message
       );
 
@@ -716,6 +816,13 @@ async function init() {
       }
     });
 
+    document.getElementById('dependenciesQuery').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runDependenciesQuery();
+      }
+    });
+
   } catch (err) {
     console.error('Critical error during initialization:', err);
     updateLoadingStep('init-error', 'error', 'Initialization failed');
@@ -744,12 +851,13 @@ function updateURL() {
   }
 
   // Get all query values
-  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery'];
+  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery', 'dependenciesQuery'];
   const defaultQueries = {
     'driversQuery': "SELECT * FROM read_parquet('drivers.parquet')",
     'releasesQuery': "SELECT * FROM read_parquet('releases.parquet')",
     'librariesQuery': "SELECT * FROM read_parquet('libraries.parquet')",
-    'symbolsQuery': "SELECT * FROM read_parquet('symbols.parquet')"
+    'symbolsQuery': "SELECT * FROM read_parquet('symbols.parquet')",
+    'dependenciesQuery': "SELECT * FROM read_parquet('dependencies.parquet') WHERE is_latest = true"
   };
 
   queryIds.forEach(id => {
@@ -770,7 +878,7 @@ function restoreQueriesFromURL() {
   const params = new URLSearchParams(window.location.search);
 
   // Restore queries
-  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery'];
+  const queryIds = ['driversQuery', 'releasesQuery', 'librariesQuery', 'symbolsQuery', 'dependenciesQuery'];
   queryIds.forEach(id => {
     const value = params.get(id);
     if (value) {

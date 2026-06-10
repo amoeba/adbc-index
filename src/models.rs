@@ -116,6 +116,23 @@ pub struct DriverRecord {
     pub language: Option<String>,
 }
 
+/// A dependency record - one row per dynamic library dependency
+#[derive(Debug, Clone)]
+pub struct DependencyRecord {
+    pub name: String,
+    pub release_tag: String,
+    pub version: Option<String>,
+    pub os: String,
+    pub arch: Vec<String>,
+    pub library_name: String,
+    pub dependency: String,
+    pub dependency_basename: String,
+    pub dependency_index: i64,
+    pub is_system: bool,
+    /// True if this dependency belongs to the latest release for this driver
+    pub is_latest: bool,
+}
+
 /// A symbol record - one row per exported symbol
 #[derive(Debug, Clone)]
 pub struct SymbolRecord {

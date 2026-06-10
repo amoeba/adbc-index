@@ -1,5 +1,6 @@
 pub mod artifact_parser;
 pub mod config;
+pub mod dependencies;
 pub mod error;
 pub mod models;
 pub mod stub_detector;
