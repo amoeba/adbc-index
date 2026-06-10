@@ -141,7 +141,7 @@ fn extract_mach_dependencies(mach: &Mach, buffer: &[u8], path: &Path) -> Result<
 pub fn is_system_dependency(dependency: &str, os: &str) -> bool {
     match os {
         "linux" => is_system_linux(dependency),
-        "macos" => is_system_macos(dependency),
+        "macos" | "darwin" => is_system_macos(dependency),
         "windows" => is_system_windows(dependency),
         _ => false,
     }
@@ -153,6 +153,7 @@ fn is_system_linux(dep: &str) -> bool {
     // These are the basename (ELF only stores filenames)
     const SYSTEM_PREFIXES: &[&str] = &[
         "libc.so",
+        "libc.musl-",
         "libm.so",
         "libpthread.so",
         "libdl.so",
@@ -164,6 +165,7 @@ fn is_system_linux(dep: &str) -> bool {
         "libmvec.so",
         "ld-linux-",
         "ld-linux.",
+        "ld-musl-",
         "linux-vdso.so",
         "linux-gate.so",
         "libgcc_s.so",
@@ -206,6 +208,7 @@ fn is_system_windows(dep: &str) -> bool {
         "oleaut32.dll",
         "comctl32.dll",
         "comdlg32.dll",
+        "combase.dll",
         "ws2_32.dll",
         "wsock32.dll",
         "winmm.dll",
@@ -216,6 +219,7 @@ fn is_system_windows(dep: &str) -> bool {
         "crypt32.dll",
         "secur32.dll",
         "bcrypt.dll",
+        "bcryptprimitives.dll",
         "ncrypt.dll",
         "rpcrt4.dll",
         "shlwapi.dll",
@@ -240,6 +244,8 @@ fn is_system_windows(dep: &str) -> bool {
         "sechost.dll",
         "cfgmgr32.dll",
         "nsi.dll",
+        "wldap32.dll",
+        "rstrtmgr.dll",
     ];
 
     if SYSTEM_DLLS.contains(&dep_lower.as_str()) {
@@ -257,6 +263,17 @@ fn is_system_windows(dep: &str) -> bool {
         return true;
     }
     if dep_lower.starts_with("concrt") && dep_lower.ends_with(".dll") {
+        return true;
+    }
+
+    // GCC/MinGW runtime DLLs
+    if dep_lower.starts_with("libgcc_s") && dep_lower.ends_with(".dll") {
+        return true;
+    }
+    if dep_lower.starts_with("libstdc++") && dep_lower.ends_with(".dll") {
+        return true;
+    }
+    if dep_lower.starts_with("libwinpthread") && dep_lower.ends_with(".dll") {
         return true;
     }
 
@@ -280,11 +297,14 @@ mod tests {
     #[test]
     fn test_is_system_linux() {
         assert!(is_system_linux("libc.so.6"));
+        assert!(is_system_linux("libc.musl-x86_64.so.1"));
+        assert!(is_system_linux("libc.musl-aarch64.so.1"));
         assert!(is_system_linux("libm.so.6"));
         assert!(is_system_linux("libpthread.so.0"));
         assert!(is_system_linux("libdl.so.2"));
         assert!(is_system_linux("librt.so.1"));
         assert!(is_system_linux("ld-linux-x86-64.so.2"));
+        assert!(is_system_linux("ld-musl-x86_64.so.1"));
         assert!(is_system_linux("linux-vdso.so.1"));
         assert!(is_system_linux("libgcc_s.so.1"));
         assert!(is_system_linux("libstdc++.so.6"));
@@ -316,6 +336,22 @@ mod tests {
     }
 
     #[test]
+    fn test_is_system_dependency_darwin_os() {
+        // The artifact parser normalizes macOS to "darwin", so is_system_dependency
+        // must accept both "macos" and "darwin".
+        assert!(is_system_dependency("/usr/lib/libSystem.B.dylib", "darwin"));
+        assert!(is_system_dependency(
+            "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            "darwin"
+        ));
+        assert!(is_system_dependency("/usr/lib/libiconv.2.dylib", "darwin"));
+        assert!(!is_system_dependency("libcliv2.dylib", "darwin"));
+
+        // Also works with "macos"
+        assert!(is_system_dependency("/usr/lib/libSystem.B.dylib", "macos"));
+    }
+
+    #[test]
     fn test_is_system_windows() {
         assert!(is_system_windows("KERNEL32.dll"));
         assert!(is_system_windows("kernel32.dll"));
@@ -327,6 +363,13 @@ mod tests {
         assert!(is_system_windows("ucrtbase.dll"));
         assert!(is_system_windows("api-ms-win-crt-runtime-l1-1-0.dll"));
         assert!(is_system_windows("MSVCP140.dll"));
+        assert!(is_system_windows("bcryptprimitives.dll"));
+        assert!(is_system_windows("combase.dll"));
+        assert!(is_system_windows("WLDAP32.dll"));
+        assert!(is_system_windows("RstrtMgr.DLL"));
+        assert!(is_system_windows("libgcc_s_seh-1.dll"));
+        assert!(is_system_windows("libstdc++-6.dll"));
+        assert!(is_system_windows("libwinpthread-1.dll"));
 
         // Non-system
         assert!(!is_system_windows("oci.dll"));
