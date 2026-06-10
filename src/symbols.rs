@@ -53,15 +53,6 @@ pub fn extract_binary_strings<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 
-    // Limit buffer size to prevent memory issues (100MB max)
-    if buffer.len() > 100 * 1024 * 1024 {
-        return Err(crate::error::AdbcIndexError::Config(format!(
-            "Binary file too large: {} ({} bytes)",
-            path.display(),
-            buffer.len()
-        )));
-    }
-
     // Extract printable strings from the binary (min length 4 characters)
     let mut strings = Vec::new();
     let mut current_string = String::new();
@@ -97,15 +88,6 @@ pub fn extract_symbols<P: AsRef<Path>>(path: P, filter: &SymbolFilter) -> Result
         let mut file = File::open(path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
-
-        // Limit buffer size to prevent memory issues (100MB max)
-        if buffer.len() > 100 * 1024 * 1024 {
-            return Err(crate::error::AdbcIndexError::Config(format!(
-                "Binary file too large: {} ({} bytes)",
-                path.display(),
-                buffer.len()
-            )));
-        }
 
         let symbols = match Object::parse(&buffer)? {
             Object::Elf(elf) => extract_elf_symbols(&elf, filter),
