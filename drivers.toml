@@ -94,3 +94,7 @@ urls = ["https://github.com/duckdb/duckdb"]
 version = ">=0.8.0"
 artifact_filter = "libduckdb-*"
 language = "c++"
+
+
+[drivers.spark]
+urls = ["# TODO: add source URL"]
