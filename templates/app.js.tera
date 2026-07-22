@@ -1,4 +1,102 @@
 <script type="module">
+// ── Driver → language mapping (injected at build time) ─────────────────────
+const DRIVER_LANGUAGES = {{ driver_languages_json | safe }};
+
+// ── Cross-chart brush state ──────────────────────────────────────────────────
+// Both fields are Sets so any number of items can be co-highlighted.
+let brushState = { drivers: new Set(), languages: new Set() };
+
+/**
+ * Highlight a collection of drivers (and optionally specific language bars).
+ * When `explicitLanguages` is omitted the languages are derived automatically
+ * from DRIVER_LANGUAGES so clicking/hovering any driver always lights up its
+ * language bar too.
+ */
+function applyBrush(driverNames, explicitLanguages = null) {
+  const driverSet = new Set(driverNames);
+  const languageSet = explicitLanguages
+    ? new Set(explicitLanguages)
+    : new Set(driverNames.map(d => DRIVER_LANGUAGES[d]).filter(Boolean));
+
+  // Bail early if the selection is identical to the current state
+  if (driverSet.size === brushState.drivers.size &&
+      languageSet.size === brushState.languages.size &&
+      [...driverSet].every(d => brushState.drivers.has(d)) &&
+      [...languageSet].every(l => brushState.languages.has(l))) return;
+
+  brushState = { drivers: driverSet, languages: languageSet };
+
+  document.querySelectorAll('.charts-grid svg').forEach(svg => {
+    svg.classList.add('brush-active');
+    svg.querySelectorAll('.chart-row').forEach(el => el.classList.remove('brushed'));
+
+    // Single-driver bar / box-plot rows
+    svg.querySelectorAll('[data-driver]').forEach(el => {
+      if (driverSet.has(el.getAttribute('data-driver'))) el.classList.add('brushed');
+    });
+
+    // Multi-driver timeline circles: brushed if ANY of their drivers is selected
+    svg.querySelectorAll('[data-drivers]').forEach(el => {
+      const elDrivers = el.getAttribute('data-drivers').split(',');
+      if (elDrivers.some(d => driverSet.has(d))) el.classList.add('brushed');
+    });
+
+    // Language bars
+    svg.querySelectorAll('[data-language]').forEach(el => {
+      if (languageSet.has(el.getAttribute('data-language'))) el.classList.add('brushed');
+    });
+  });
+}
+
+function clearBrush() {
+  brushState = { drivers: new Set(), languages: new Set() };
+  document.querySelectorAll('.charts-grid svg').forEach(svg => {
+    svg.classList.remove('brush-active');
+    svg.querySelectorAll('.chart-row').forEach(el => el.classList.remove('brushed'));
+  });
+}
+
+function setupBrushHandlers() {
+  const chartsGrid = document.querySelector('.charts-grid');
+  if (!chartsGrid) return;
+
+  chartsGrid.addEventListener('mouseover', event => {
+    const row = event.target.closest('.chart-row');
+    const inSvg = event.target.closest('svg');
+
+    if (row) {
+      const driver   = row.getAttribute('data-driver');   // single driver (bar/box)
+      const drivers  = row.getAttribute('data-drivers');  // multi-driver (timeline date)
+      const language = row.getAttribute('data-language'); // language bar
+
+      if (driver) {
+        // Skip redundant updates when moving between child elements of the same row
+        if (brushState.drivers.size === 1 && brushState.drivers.has(driver)) return;
+        applyBrush([driver]);
+      } else if (drivers) {
+        const arr = drivers.split(',');
+        if (brushState.drivers.size === arr.length && arr.every(d => brushState.drivers.has(d))) return;
+        applyBrush(arr);
+      } else if (language) {
+        if (brushState.languages.size === 1 && brushState.languages.has(language)) return;
+        const driversWithLang = Object.entries(DRIVER_LANGUAGES)
+          .filter(([, lang]) => lang === language)
+          .map(([d]) => d);
+        applyBrush(driversWithLang, [language]);
+      }
+    } else if (inSvg) {
+      // Hovering SVG whitespace (axis area, etc.) — clear
+      clearBrush();
+    }
+    // Hovering a chart title or other non-SVG element: leave brush as-is
+  });
+
+  // Leaving the grid entirely always clears
+  chartsGrid.addEventListener('mouseleave', clearBrush);
+}
+
+// Expose for any inline onclick handlers that may exist
+
 let db;
 let loadingSteps = {};
 let tableFilters = {
@@ -936,6 +1034,9 @@ document.addEventListener('DOMContentLoaded', () => {
       switchTab(tabName);
     });
   });
+
+  // Set up cross-chart brush listeners
+  setupBrushHandlers();
 });
 
 // Global error handler for unhandled errors

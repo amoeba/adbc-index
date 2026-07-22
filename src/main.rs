@@ -1492,16 +1492,36 @@ async fn html() -> Result<()> {
     println!("🔨 Generating HTML...");
 
     // Generate charts
+    // Build driver → language JSON for the in-browser brush system.
+    // Queries the same drivers.parquet so no extra parquet file needed.
+    let driver_lang_csv = query_duckdb(
+        "SELECT name, COALESCE(language, '') as language FROM read_parquet('dist/drivers.parquet')"
+    )?;
+    let mut driver_languages_json = String::from("{\n");
+    let mut first_entry = true;
+    for line in driver_lang_csv.lines().skip(1) {
+        if line.trim().is_empty() { continue; }
+        let cells = csv_utils::parse_csv_line(line);
+        if cells.len() >= 2 {
+            if !first_entry { driver_languages_json.push_str(",\n"); }
+            let name_j = cells[0].replace('\\', "\\\\").replace('"', "\\\"");
+            let lang_j = cells[1].replace('\\', "\\\\").replace('"', "\\\"");
+            driver_languages_json.push_str(&format!("  \"{}\":\"{}\"", name_j, lang_j));
+            first_entry = false;
+        }
+    }
+    driver_languages_json.push_str("\n}");
+
     let timeline_svg = svg::generate_driver_timeline_svg(&timeline_csv);
-    let releases_chart_svg = svg::generate_bar_chart(&releases_chart_csv, "Releases per Driver");
+    let releases_chart_svg = svg::generate_bar_chart(&releases_chart_csv, "Releases per Driver", "driver");
     let libraries_chart_svg =
         svg::generate_box_plot(&libraries_chart_csv, "Library Size by Driver (MB)");
     let symbols_chart_svg =
-        svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver");
+        svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver", "driver");
     let language_chart_svg =
-        svg::generate_bar_chart(&language_chart_csv, "Drivers by Language");
+        svg::generate_bar_chart(&language_chart_csv, "Drivers by Language", "language");
     let dependencies_chart_svg =
-        svg::generate_bar_chart(&dependencies_chart_csv, "Non-System Dependencies per Driver");
+        svg::generate_bar_chart(&dependencies_chart_csv, "Non-System Dependencies per Driver", "driver");
 
     // Get file sizes for download links
     let drivers_size = csv_utils::format_file_size(std::fs::metadata(&drivers_path)?.len());
@@ -1535,6 +1555,7 @@ async fn html() -> Result<()> {
     context.insert("libraries_size", &libraries_size);
     context.insert("symbols_size", &symbols_size);
     context.insert("dependencies_size", &dependencies_size);
+    context.insert("driver_languages_json", &driver_languages_json);
 
     // Render template
     let html = match tera.render("index.html.tera", &context) {

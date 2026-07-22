@@ -1,7 +1,10 @@
 use crate::csv_utils;
 use chrono::NaiveDateTime;
+use std::collections::HashMap;
 
-/// Generate an SVG plot showing cumulative driver releases over time
+/// Generate an SVG plot showing cumulative driver releases over time.
+/// Each driver gets an invisible hit-target circle tagged with `data-driver`
+/// so the brushing system can highlight individual drivers.
 pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     // Parse CSV to extract dates and driver names
     let mut data_points: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
@@ -39,14 +42,14 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     let mut current_date: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut count = 0;
 
-    for (date, _) in data_points {
+    for (date, _) in data_points.iter() {
         let date_only = date.date_naive();
 
         match current_date {
             None => {
                 count = 1;
-                current_date = Some(date);
-                plot_points.push((date, count));
+                current_date = Some(*date);
+                plot_points.push((*date, count));
             }
             Some(prev_date) => {
                 let prev_date_only = prev_date.date_naive();
@@ -57,8 +60,8 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
                     }
                 } else {
                     count += 1;
-                    plot_points.push((date, count));
-                    current_date = Some(date);
+                    plot_points.push((*date, count));
+                    current_date = Some(*date);
                 }
             }
         }
@@ -91,6 +94,17 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
 
     // If all releases are on the same date, avoid division by zero
     let safe_date_range = if date_range <= 0.0 { 1.0 } else { date_range };
+
+    // Build date → (x, y) mapping for per-driver interactive circles
+    let mut date_to_xy: HashMap<chrono::NaiveDate, (f64, f64)> = HashMap::new();
+    for (date, count) in &plot_points {
+        let date_only = date.date_naive();
+        let x = margin_left
+            + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range)
+                * plot_width);
+        let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
+        date_to_xy.insert(date_only, (x, y));
+    }
 
     let mut svg = String::new();
     svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
@@ -152,7 +166,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
         svg.push('\n');
     }
 
-    // Plot area fill
+    // Plot area fill (class="timeline-bg" so brush CSS can dim it)
     let mut area_points = format!("{},{} ", margin_left, margin_top + plot_height);
     for (date, count) in &plot_points {
         let x = margin_left
@@ -168,7 +182,7 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     ));
 
     svg.push_str(&format!(
-        "<polygon points=\"{}\" fill=\"rgba(0, 212, 255, 0.1)\" stroke=\"none\"/>",
+        "<polygon points=\"{}\" fill=\"rgba(0, 212, 255, 0.1)\" stroke=\"none\" class=\"timeline-bg\"/>",
         area_points.trim()
     ));
     svg.push('\n');
@@ -184,30 +198,58 @@ pub fn generate_driver_timeline_svg(timeline_csv: &str) -> String {
     }
 
     svg.push_str(&format!(
-        "<polyline points=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"2\"/>",
+        "<polyline points=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"2\" class=\"timeline-bg\"/>",
         polyline_points.trim()
     ));
     svg.push('\n');
 
-    // Plot points
+    // Visible step-point circles (aesthetic, not interactive)
     for (date, count) in &plot_points {
         let x = margin_left
             + ((date.signed_duration_since(min_date).num_seconds() as f64 / safe_date_range)
                 * plot_width);
         let y = margin_top + plot_height - ((*count as f64 / max_count as f64) * plot_height);
         svg.push_str(&format!(
-            "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"#00d4ff\"/>",
+            "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"#00d4ff\" class=\"timeline-step-point\"/>",
             x, y
         ));
         svg.push('\n');
+    }
+
+    // Per-date interactive circles for brushing.
+    // Group all drivers that share a release date into one circle so hovering
+    // a multi-driver point brushes every driver on that date simultaneously.
+    let mut date_to_drivers: HashMap<chrono::NaiveDate, Vec<String>> = HashMap::new();
+    for (date, name) in &data_points {
+        date_to_drivers
+            .entry(date.date_naive())
+            .or_default()
+            .push(name.clone());
+    }
+
+    for (date_only, drivers) in &date_to_drivers {
+        if let Some(&(x, y)) = date_to_xy.get(date_only) {
+            let drivers_val = drivers.join(",")
+                .replace('&', "&amp;")
+                .replace('"', "&quot;");
+            svg.push_str(&format!(
+                "<circle class=\"chart-row brushable timeline-date-group\" \
+                 data-drivers=\"{}\" cx=\"{}\" cy=\"{}\" r=\"8\" \
+                 fill=\"transparent\" stroke=\"transparent\"/>",
+                drivers_val, x, y
+            ));
+            svg.push('\n');
+        }
     }
 
     svg.push_str("</svg>\n");
     svg
 }
 
-/// Generate a horizontal bar chart
-pub fn generate_bar_chart(csv: &str, title: &str) -> String {
+/// Generate a horizontal bar chart.
+/// `item_attr` is the data-attribute name used for brushing:
+/// use `"driver"` for driver charts and `"language"` for the language breakdown chart.
+pub fn generate_bar_chart(csv: &str, title: &str, item_attr: &str) -> String {
     // Parse CSV to extract names and values
     let mut data: Vec<(String, f64)> = Vec::new();
 
@@ -258,67 +300,75 @@ pub fn generate_bar_chart(csv: &str, title: &str) -> String {
     svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
     svg.push('\n');
 
-    // Draw bars
+    // Gradient definition emitted first so later fill references resolve correctly.
+    // Multiple SVGs on the page share this ID; they all use identical stops so it's fine.
+    svg.push_str(
+        "<defs><linearGradient id=\"barGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
+         <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:1\" />\
+         <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:1\" />\
+         </linearGradient></defs>\n",
+    );
+
+    // Draw bars – each row is wrapped in a <g> for CSS-based brushing
     for (i, (name, value)) in data.iter().enumerate() {
         let y = margin_top + (i as f64 * (bar_height + bar_spacing));
         let scaled_value = value / divisor;
         let bar_width = (scaled_value / scaled_max) * plot_width;
 
-        // Bar background
+        let escaped = name.replace('&', "&amp;").replace('"', "&quot;");
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#1a2332\" opacity=\"0.3\"/>",
+            "<g data-{}=\"{}\" class=\"chart-row brushable\">\n",
+            item_attr, escaped
+        ));
+
+        // Bar background (full-width track)
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#1a2332\" opacity=\"0.3\"/>\n",
             margin_left, y, plot_width, bar_height
         ));
-        svg.push('\n');
 
-        // Bar
+        // Bar fill
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#barGradient)\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#barGradient)\"/>\n",
             margin_left, y, bar_width, bar_height
         ));
-        svg.push('\n');
 
         // Bar border
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"1\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#00d4ff\" stroke-width=\"1\"/>\n",
             margin_left, y, bar_width, bar_height
         ));
-        svg.push('\n');
 
-        // Label
+        // Driver/language label
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>",
-            margin_left - 8.0, y + bar_height / 2.0, name
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>\n",
+            margin_left - 8.0,
+            y + bar_height / 2.0,
+            name
         ));
-        svg.push('\n');
 
-        // Value
+        // Value label
         let value_text = if is_bytes {
             format!("{:.1}", scaled_value)
         } else {
             format!("{:.0}", scaled_value)
         };
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
-            margin_left + bar_width + 8.0, y + bar_height / 2.0, value_text
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>\n",
+            margin_left + bar_width + 8.0,
+            y + bar_height / 2.0,
+            value_text
         ));
-        svg.push('\n');
-    }
 
-    // Add gradient definition
-    svg.insert_str(
-        svg.find("<rect").unwrap(),
-        "<defs><linearGradient id=\"barGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
-         <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:1\" />\
-         <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:1\" />\
-         </linearGradient></defs>",
-    );
+        svg.push_str("</g>\n");
+    }
 
     svg.push_str("</svg>\n");
     svg
 }
 
-/// Generate a horizontal box and whisker plot
+/// Generate a horizontal box-and-whisker plot.
+/// Each row is wrapped in `<g data-driver="…">` for CSS-based brushing.
 pub fn generate_box_plot(csv: &str, title: &str) -> String {
     // Parse CSV to extract names and box plot statistics
     // Expected format: name,min,q1,median,q3,max,latest_min,latest_max
@@ -383,7 +433,15 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
     svg.push_str(&format!("<svg width=\"100%\" height=\"{}\" viewBox=\"0 0 {} {}\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background: transparent; max-width: 100%;\">", height, width, height));
     svg.push('\n');
 
-    // Add legend
+    // Gradient definition upfront
+    svg.push_str(
+        "<defs><linearGradient id=\"boxGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
+         <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:0.7\" />\
+         <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:0.7\" />\
+         </linearGradient></defs>\n",
+    );
+
+    // Add legend (chart-level, not per-row)
     let legend_y = 15.0;
     let legend_x_start = margin_left;
     let legend_spacing = 90.0;
@@ -439,7 +497,7 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
     ));
     svg.push('\n');
 
-    // Draw box plots
+    // Draw box plots – each row wrapped in a <g> for brushing
     for (i, (name, min, q1, median, q3, max, latest_min, latest_max)) in data.iter().enumerate() {
         let y = margin_top + (i as f64 * (box_height + box_spacing));
         let center_y = y + box_height / 2.0;
@@ -465,54 +523,53 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         let box_width = q3_x - q1_x;
         let latest_box_width = (latest_max_x - latest_min_x).max(2.0); // min 2px so single-platform is visible
 
+        let escaped = name.replace('&', "&amp;").replace('"', "&quot;");
+        svg.push_str(&format!(
+            "<g data-driver=\"{}\" class=\"chart-row brushable\">\n",
+            escaped
+        ));
+
         // Whisker line (min to max)
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>\n",
             min_x, center_y, max_x, center_y
         ));
-        svg.push('\n');
 
         // Min cap
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>\n",
             min_x, y + 5.0, min_x, y + box_height - 5.0
         ));
-        svg.push('\n');
 
         // Max cap
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>\n",
             max_x, y + 5.0, max_x, y + box_height - 5.0
         ));
-        svg.push('\n');
 
         // Box (Q1 to Q3)
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#boxGradient)\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#boxGradient)\" stroke=\"#00d4ff\" stroke-width=\"1.5\"/>\n",
             q1_x, y, box_width, box_height
         ));
-        svg.push('\n');
 
         // Median line
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffffff\" stroke-width=\"2\"/>",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#ffffff\" stroke-width=\"2\"/>\n",
             median_x, y, median_x, y + box_height
         ));
-        svg.push('\n');
 
         // Latest release box (transparent yellow overlay)
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ffd700\" fill-opacity=\"0.35\" stroke=\"#ffd700\" stroke-width=\"1.5\" rx=\"2\"/>",
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#ffd700\" fill-opacity=\"0.35\" stroke=\"#ffd700\" stroke-width=\"1.5\" rx=\"2\"/>\n",
             latest_min_x, y - 2.0, latest_box_width, box_height + 4.0
         ));
-        svg.push('\n');
 
-        // Label
+        // Driver label
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>",
+            "<text x=\"{}\" y=\"{}\" font-size=\"10\" fill=\"#e3f2fd\" text-anchor=\"end\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\" font-weight=\"500\">{}</text>\n",
             margin_left - 8.0, center_y, name
         ));
-        svg.push('\n');
 
         // Value range text
         let value_text = if is_bytes {
@@ -521,13 +578,14 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
             format!("{:.0}-{:.0}", scaled_min, scaled_max_val)
         };
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#90caf9\" alignment-baseline=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>\n",
             max_x + 8.0, center_y, value_text
         ));
-        svg.push('\n');
+
+        svg.push_str("</g>\n");
     }
 
-    // Add x-axis scale at the bottom
+    // Add x-axis scale at the bottom (not part of any row group)
     let axis_y = margin_top + (total_boxes * (box_height + box_spacing)) + 5.0;
     let unit = if is_bytes { "MB" } else { "" };
 
@@ -541,7 +599,7 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
         let tick_x = margin_left + (tick_val / scaled_max) * plot_width;
         // Tick mark
         svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#546e7a\" stroke-width=\"1\"/>",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#546e7a\" stroke-width=\"1\"/>\n",
             tick_x, axis_y, tick_x, axis_y + 4.0
         ));
         // Label
@@ -551,28 +609,17 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
             format!("{:.1}{}", tick_val, unit)
         };
         svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#546e7a\" text-anchor=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>",
+            "<text x=\"{}\" y=\"{}\" font-size=\"9\" fill=\"#546e7a\" text-anchor=\"middle\" font-family=\"JetBrains Mono, monospace\">{}</text>\n",
             tick_x, axis_y + 14.0, label
         ));
-        svg.push('\n');
         tick_val += nice_interval;
     }
 
     // Axis line
     svg.push_str(&format!(
-        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#546e7a\" stroke-width=\"1\"/>",
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#546e7a\" stroke-width=\"1\"/>\n",
         margin_left, axis_y, margin_left + plot_width, axis_y
     ));
-    svg.push('\n');
-
-    // Add gradient definition
-    svg.insert_str(
-        svg.find("<line").unwrap(),
-        "<defs><linearGradient id=\"boxGradient\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"0%\">\
-         <stop offset=\"0%\" style=\"stop-color:#0099cc;stop-opacity:0.7\" />\
-         <stop offset=\"100%\" style=\"stop-color:#00d4ff;stop-opacity:0.7\" />\
-         </linearGradient></defs>",
-    );
 
     svg.push_str("</svg>\n");
     svg

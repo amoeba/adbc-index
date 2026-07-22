@@ -547,4 +547,48 @@
       font-size: 40px;
     }
   }
+
+  /* ── Cross-chart brushing ──────────────────────────────────────────────── */
+
+  /* Every bar row, box-plot row, and timeline driver point is clickable */
+  .chart-row {
+    cursor: pointer;
+    transition: opacity 0.35s ease-in-out, filter 0.35s ease-in-out;
+  }
+
+  /* Hover brightens the row when no brush is active */
+  .chart-row:hover {
+    filter: brightness(1.25);
+  }
+
+  /* Brush active: very gentle fade on non-brushed rows */
+  svg.brush-active .chart-row:not(.brushed) {
+    opacity: 0.45;
+    filter: grayscale(0.15) brightness(0.9);
+  }
+
+  /* Brushed row: full visibility + gold glow */
+  svg.brush-active .chart-row.brushed {
+    opacity: 1;
+    filter: drop-shadow(0 0 5px rgba(255, 215, 0, 0.75));
+  }
+
+  /* Timeline: dim the shared area fill and step-point circles too */
+  svg.brush-active .timeline-bg,
+  svg.brush-active .timeline-step-point {
+    opacity: 0.4;
+    transition: opacity 0.35s ease-in-out;
+  }
+
+  /* Timeline driver hit-circles: show gold ring when brushed */
+  .timeline-date-group {
+    transition: stroke 0.35s ease-in-out, fill 0.35s ease-in-out;
+  }
+
+  svg.brush-active .timeline-date-group.brushed {
+    stroke: #ffd700;
+    stroke-width: 3;
+    fill: rgba(255, 215, 0, 0.25);
+  }
+
 </style>
