@@ -97,4 +97,5 @@ language = "c++"
 
 
 [drivers.spark]
-urls = ["# TODO: add source URL"]
+urls = ["https://github.com/adbc-drivers/spark"]
+language = "go"

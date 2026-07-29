@@ -107,6 +107,65 @@ let tableFilters = {
   dependencies: {}
 };
 
+// Multi-value (OR) filters per column: col → Set<value>
+let tableMultiFilters = {
+  drivers: {},
+  releases: {},
+  libraries: {},
+  symbols: {},
+  dependencies: {}
+};
+
+// Track which column's facet panel is currently open for each table
+let currentFacetColumns = {
+  drivers: null,
+  releases: null,
+  libraries: null,
+  symbols: null,
+  dependencies: null,
+};
+
+// Track which tables have had their quick-filter widgets initialised
+const quickFiltersInitialized = new Set();
+
+// Quick-filter config.
+// type 'toggle' – single boolean/value toggle (on/off)
+// type 'multi'  – multiselect dropdown
+//   colType 'scalar' – plain scalar column  → col IN (a,b) / col = a
+//   colType 'list'   – List<T> parquet col  → list_contains(col,a) OR ...
+//   options (optional) – static [{label,val}]; omit to load distinct values from DuckDB
+const QUICK_FILTERS = {
+  drivers: [
+    { type: 'multi',  label: 'Language', col: 'language', colType: 'scalar' },
+  ],
+  releases: [
+    { type: 'toggle', label: 'Latest',          col: 'is_latest',            val: true },
+    { type: 'toggle', label: 'Universal Binary', col: 'has_universal_binary', val: true },
+    { type: 'multi',  label: 'Platform', col: 'os',   colType: 'list' },
+    { type: 'multi',  label: 'Arch',     col: 'arch', colType: 'list' },
+  ],
+  libraries: [
+    { type: 'toggle', label: 'Latest',   col: 'is_latest', val: true },
+    { type: 'multi',  label: 'Platform', col: 'os',        colType: 'scalar' },
+    { type: 'multi',  label: 'Arch',     col: 'arch',      colType: 'list'   },
+    { type: 'multi',  label: 'Language', col: 'language',  colType: 'scalar' },
+  ],
+  symbols: [
+    { type: 'toggle', label: 'Latest',   col: 'is_latest', val: true },
+    { type: 'multi',  label: 'Platform', col: 'os',        colType: 'scalar' },
+    { type: 'multi',  label: 'Arch',     col: 'arch',      colType: 'list'   },
+    { type: 'multi',  label: 'Stub',     col: 'is_stub',   colType: 'scalar',
+      options: [{ label: 'Stubs', val: true }, { label: 'Non-Stubs', val: false }] },
+  ],
+  dependencies: [
+    { type: 'toggle', label: 'Latest',     col: 'is_latest',  val: true },
+    { type: 'multi',  label: 'Platform',   col: 'os',         colType: 'scalar' },
+    { type: 'multi',  label: 'Arch',       col: 'arch',       colType: 'list'   },
+    { type: 'multi',  label: 'System Dep', col: 'is_system',  colType: 'scalar',
+      options: [{ label: 'System', val: true }, { label: 'Non-System', val: false }] },
+  ],
+};
+
 function updateLoadingStep(id, status, message) {
   if (!loadingSteps[id]) {
     const stepDiv = document.createElement('div');
@@ -247,68 +306,42 @@ function convertBigIntsToNumbers(obj) {
   return result;
 }
 
-function filterTableByCell(tableName, columnName, value) {
-  console.log(`filterTableByCell called: table=${tableName}, column=${columnName}, value=${value}`);
-
-  // Get the query textarea element
-  const queryId = `${tableName}Query`;
-  const queryElement = document.getElementById(queryId);
-  if (!queryElement) {
-    console.error(`Query element not found: ${queryId}`);
-    return;
+// Build a type-aware SQL WHERE condition (handles booleans, numbers, nulls, strings)
+function buildSqlCondition(col, val) {
+  if (val === null || val === undefined) {
+    return `${col} IS NULL`;
+  } else if (typeof val === 'boolean') {
+    return `${col} = ${val}`;
+  } else if (typeof val === 'number') {
+    return `${col} = ${val}`;
+  } else {
+    const escaped = String(val).replace(/'/g, "''");
+    return `${col} = '${escaped}'`;
   }
+}
 
-  // Get the filters for this table
+function filterTableByCell(tableName, columnName, value) {
   const filters = tableFilters[tableName];
-  console.log('Current filters:', JSON.stringify(filters));
 
-  // Check if this column is already filtered with this exact value
-  // Use hasOwnProperty to check if the key exists, and compare values carefully
+  // Toggle single-value filter for this column
   const hasFilter = Object.prototype.hasOwnProperty.call(filters, columnName);
   const isSameValue = hasFilter && (
     (filters[columnName] === value) ||
-    (filters[columnName] === null && value === null) ||
-    (filters[columnName] === undefined && value === undefined)
+    (filters[columnName] === null && value === null)
   );
 
-  console.log(`hasFilter=${hasFilter}, isSameValue=${isSameValue}, stored value=${filters[columnName]}`);
-
   if (isSameValue) {
-    // Remove the filter for this column (toggle off)
-    console.log(`Removing filter for ${columnName}`);
     delete filters[columnName];
   } else {
-    // Add or update the filter for this column (toggle on)
-    console.log(`Adding filter for ${columnName} = ${value}`);
     filters[columnName] = value;
+    // Single and multi-value filters are mutually exclusive per column
+    delete tableMultiFilters[tableName][columnName];
   }
 
-  console.log('Updated filters:', JSON.stringify(filters));
-
-  // Build the query from the filters
-  const defaultQuery = `SELECT * FROM read_parquet('${tableName}.parquet')`;
-
-  if (Object.keys(filters).length === 0) {
-    // No filters, use default query
-    console.log('No filters, using default query');
-    queryElement.value = defaultQuery;
-  } else {
-    // Build WHERE clauses for each filter
-    const whereClauses = Object.entries(filters).map(([col, val]) => {
-      if (val === null || val === undefined) {
-        return `${col} IS NULL`;
-      } else {
-        // Escape single quotes in the value for SQL
-        const escapedValue = String(val).replace(/'/g, "''");
-        return `${col} = '${escapedValue}'`;
-      }
-    });
-
-    const whereClause = whereClauses.join(' AND ');
-    const newQuery = `SELECT * FROM read_parquet('${tableName}.parquet') WHERE ${whereClause}`;
-    console.log('Built query:', newQuery);
-    queryElement.value = newQuery;
-  }
+  // Rebuild SQL textarea and refresh UI
+  rebuildQuery(tableName);
+  updateQuickFilterStates(tableName);
+  renderActiveFilters(tableName);
 
   // Run the query
   const runFunctions = {
@@ -327,6 +360,328 @@ function filterTableByCell(tableName, columnName, value) {
   } else {
     console.error(`No run function found for table: ${tableName}`);
   }
+}
+
+// ── Filter UI helpers ──────────────────────────────────────────────────────
+
+// One-time creation of all quick-filter widgets for a table.
+function initQuickFilters(tableName) {
+  const container = document.getElementById(tableName + 'QuickFilters');
+  if (!container) return;
+  const presets = QUICK_FILTERS[tableName] || [];
+  container.innerHTML = '';
+  if (presets.length === 0) return;
+
+  const label = document.createElement('span');
+  label.className = 'quick-filters-label';
+  label.textContent = 'Quick:';
+  container.appendChild(label);
+
+  presets.forEach(preset => {
+    if (preset.type === 'toggle') {
+      const btn = document.createElement('button');
+      btn.className = 'quick-filter-btn toggle-filter-btn';
+      btn.dataset.col = preset.col;
+      btn.dataset.val = JSON.stringify(preset.val);
+      btn.textContent = preset.label;
+      btn.title = buildSqlCondition(preset.col, preset.val);
+      btn.onclick = () => filterTableByCell(tableName, preset.col, preset.val);
+      container.appendChild(btn);
+    } else if (preset.type === 'multi') {
+      renderMultiSelectFilter(tableName, preset, container);
+    }
+  });
+
+  updateQuickFilterStates(tableName);
+}
+
+// Lightweight state update – only touches CSS classes and count badges;
+// never recreates DOM so open dropdowns stay open.
+function updateQuickFilterStates(tableName) {
+  const container = document.getElementById(tableName + 'QuickFilters');
+  if (!container) return;
+
+  // Toggle buttons
+  container.querySelectorAll('.toggle-filter-btn').forEach(btn => {
+    const col = btn.dataset.col;
+    const val = JSON.parse(btn.dataset.val);
+    const isActive = Object.prototype.hasOwnProperty.call(tableFilters[tableName], col) &&
+      tableFilters[tableName][col] === val;
+    btn.classList.toggle('active', isActive);
+  });
+
+  // Multiselect buttons
+  (QUICK_FILTERS[tableName] || []).filter(p => p.type === 'multi').forEach(preset => {
+    const wrapper = document.getElementById(`${tableName}-multi-${preset.col}`);
+    if (!wrapper) return;
+    const vals = tableMultiFilters[tableName][preset.col];
+    const count = vals ? vals.size : 0;
+    wrapper.querySelector('.multi-filter-btn')?.classList.toggle('active', count > 0);
+    const badge = wrapper.querySelector('.multi-filter-count');
+    if (badge) { badge.textContent = count; badge.classList.toggle('hidden', count === 0); }
+  });
+}
+
+function createFilterChip(text, onRemove) {
+  const chip = document.createElement('span');
+  chip.className = 'filter-chip';
+  const lbl = document.createElement('span');
+  lbl.textContent = text;
+  chip.appendChild(lbl);
+  const x = document.createElement('button');
+  x.className = 'filter-chip-remove';
+  x.textContent = '\u00d7';
+  x.title = 'Remove filter';
+  x.onclick = onRemove;
+  chip.appendChild(x);
+  return chip;
+}
+
+function renderActiveFilters(tableName) {
+  const container = document.getElementById(tableName + 'ActiveFilters');
+  if (!container) return;
+  container.innerHTML = '';
+
+  // Single-value filter chips
+  Object.entries(tableFilters[tableName]).forEach(([col, val]) => {
+    container.appendChild(createFilterChip(
+      `${col}: ${val === null ? 'NULL' : String(val)}`,
+      () => filterTableByCell(tableName, col, val)
+    ));
+  });
+
+  // Multi-value filter chips
+  Object.entries(tableMultiFilters[tableName]).forEach(([col, vals]) => {
+    if (!vals || vals.size === 0) return;
+    const preset = (QUICK_FILTERS[tableName] || []).find(p => p.type === 'multi' && p.col === col);
+    const valStrs = [...vals].map(v => {
+      const opt = preset?.options?.find(o => String(o.val) === String(v));
+      return opt ? opt.label : String(v);
+    });
+    container.appendChild(createFilterChip(
+      `${col}: ${valStrs.join(', ')}`,
+      () => clearMultiFilter(tableName, col)
+    ));
+  });
+}
+
+async function showColumnFacet(tableName, colId) {
+  const panel    = document.getElementById(tableName + 'ColumnFacet');
+  const nameEl   = document.getElementById(tableName + 'FacetColName');
+  const valuesEl = document.getElementById(tableName + 'FacetValues');
+  if (!panel || !nameEl || !valuesEl) return;
+
+  currentFacetColumns[tableName] = colId;
+  panel.classList.remove('hidden');
+  nameEl.textContent = colId;
+  valuesEl.innerHTML = '<span class="facet-loading">Loading…</span>';
+
+  try {
+    const sql = `SELECT ${colId} AS val, COUNT(*) AS cnt FROM read_parquet('${tableName}.parquet') GROUP BY ${colId} ORDER BY cnt DESC LIMIT 50`;
+    const data = await queryDuckDB(sql, `facet-${tableName}-${colId}`);
+    valuesEl.innerHTML = '';
+    if (data.length === 0) {
+      valuesEl.innerHTML = '<span class="facet-loading">No values found</span>';
+      return;
+    }
+    data.forEach(row => {
+      const pill = document.createElement('button');
+      pill.className = 'facet-value-pill';
+      const rowVal = row.val;
+      // Store raw string for active-state re-checks after re-render
+      pill.dataset.rawVal = rowVal === null ? '__null__' : String(rowVal);
+      const isActive = Object.prototype.hasOwnProperty.call(tableFilters[tableName], colId) &&
+        String(tableFilters[tableName][colId]) === String(rowVal);
+      if (isActive) pill.classList.add('active');
+      const displayVal = rowVal === null ? 'NULL' : String(rowVal);
+      pill.textContent = `${displayVal} (${row.cnt})`;
+      pill.title = buildSqlCondition(colId, rowVal);
+      pill.onclick = () => filterTableByCell(tableName, colId, rowVal);
+      valuesEl.appendChild(pill);
+    });
+  } catch (err) {
+    valuesEl.innerHTML = `<span style="color:var(--error);font-size:11px">Cannot facet this column: ${err.message}</span>`;
+  }
+}
+
+function closeColumnFacet(tableName) {
+  const panel = document.getElementById(tableName + 'ColumnFacet');
+  if (panel) panel.classList.add('hidden');
+  currentFacetColumns[tableName] = null;
+}
+
+// ── Multi-filter system ──────────────────────────────────────────────────────
+
+function buildMultiCondition(col, values, colType, totalOptions) {
+  const vals = [...values];
+  if (vals.length === 0) return null;
+  // No condition needed when all options of a fixed set are selected
+  if (totalOptions != null && vals.length >= totalOptions) return null;
+
+  if (colType === 'list') {
+    const parts = vals.map(v => `list_contains(${col}, '${String(v).replace(/'/g, "''")}')`);
+    return parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
+  } else {
+    if (vals.length === 1) return buildSqlCondition(col, vals[0]);
+    const inList = vals.map(v =>
+      typeof v === 'boolean' || typeof v === 'number' ? String(v) : `'${String(v).replace(/'/g, "''")}'`
+    ).join(', ');
+    return `${col} IN (${inList})`;
+  }
+}
+
+function buildAllWhereClauses(tableName) {
+  const clauses = [];
+  for (const [col, val] of Object.entries(tableFilters[tableName]))
+    clauses.push(buildSqlCondition(col, val));
+  for (const [col, vals] of Object.entries(tableMultiFilters[tableName])) {
+    if (!vals || vals.size === 0) continue;
+    const preset = (QUICK_FILTERS[tableName] || []).find(p => p.type === 'multi' && p.col === col);
+    const cond = buildMultiCondition(col, vals, preset?.colType || 'scalar', preset?.options?.length ?? null);
+    if (cond) clauses.push(cond);
+  }
+  return clauses;
+}
+
+function rebuildQuery(tableName) {
+  const el = document.getElementById(tableName + 'Query');
+  if (!el) return;
+  const clauses = buildAllWhereClauses(tableName);
+  el.value = clauses.length === 0
+    ? `SELECT * FROM read_parquet('${tableName}.parquet')`
+    : `SELECT * FROM read_parquet('${tableName}.parquet') WHERE ${clauses.join(' AND ')}`;
+}
+
+function rebuildAndRun(tableName) {
+  rebuildQuery(tableName);
+  updateQuickFilterStates(tableName);
+  renderActiveFilters(tableName);
+  ({ drivers: runDriversQuery, releases: runReleasesQuery, libraries: runLibrariesQuery,
+     symbols: runSymbolsQuery, dependencies: runDependenciesQuery })[tableName]?.(true);
+}
+
+function closeAllDropdowns() {
+  document.querySelectorAll('.multi-filter-dropdown:not(.hidden)')
+    .forEach(d => d.classList.add('hidden'));
+}
+
+function renderMultiSelectFilter(tableName, preset, container) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'multi-filter-wrapper';
+  wrapper.id = `${tableName}-multi-${preset.col}`;
+
+  const btn = document.createElement('button');
+  btn.className = 'quick-filter-btn multi-filter-btn';
+
+  const btnText  = document.createElement('span'); btnText.textContent = preset.label;
+  const badge    = document.createElement('span'); badge.className = 'multi-filter-count hidden';
+  const arrow    = document.createElement('span'); arrow.className  = 'multi-filter-arrow'; arrow.textContent = ' ▾';
+  btn.append(btnText, badge, arrow);
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'multi-filter-dropdown hidden';
+
+  const optionsDiv = document.createElement('div');
+  optionsDiv.className = 'multi-filter-options';
+  optionsDiv.innerHTML = '<div class="facet-loading" style="padding:8px 12px">Loading…</div>';
+
+  const footer  = document.createElement('div');   footer.className  = 'multi-filter-footer';
+  const clearBtn = document.createElement('button'); clearBtn.className = 'multi-filter-clear-btn';
+  clearBtn.textContent = 'Clear';
+  clearBtn.onclick = e => { e.stopPropagation(); clearMultiFilter(tableName, preset.col); };
+  footer.appendChild(clearBtn);
+
+  dropdown.append(optionsDiv, footer);
+  // Prevent clicks inside dropdown from bubbling to the global close handler
+  dropdown.addEventListener('click', e => e.stopPropagation());
+
+  let loaded = false;
+  btn.onclick = async e => {
+    e.stopPropagation();
+    const wasOpen = !dropdown.classList.contains('hidden');
+    closeAllDropdowns();
+    if (!wasOpen) {
+      dropdown.classList.remove('hidden');
+      // Always reload dynamic options; static options only once
+      if (!loaded || !preset.options) {
+        loaded = true;
+        await loadMultiFilterOptions(tableName, preset, optionsDiv);
+      }
+    }
+  };
+
+  wrapper.append(btn, dropdown);
+  container.appendChild(wrapper);
+}
+
+async function loadMultiFilterOptions(tableName, preset, optionsDiv) {
+  let rows;
+  if (preset.options) {
+    // Static options (e.g. boolean columns)
+    rows = preset.options.map(o => ({ val: o.val, label: o.label, count: undefined }));
+  } else {
+    try {
+      let sql;
+      if (preset.colType === 'list') {
+        sql = `SELECT _v AS val, COUNT(*) AS cnt FROM read_parquet('${tableName}.parquet'), UNNEST(${preset.col}) AS _t(_v) WHERE _v IS NOT NULL GROUP BY val ORDER BY cnt DESC LIMIT 50`;
+      } else {
+        sql = `SELECT ${preset.col} AS val, COUNT(*) AS cnt FROM read_parquet('${tableName}.parquet') WHERE ${preset.col} IS NOT NULL GROUP BY val ORDER BY cnt DESC LIMIT 50`;
+      }
+      const data = await queryDuckDB(sql, `multi-opts-${tableName}-${preset.col}`);
+      rows = data.map(r => ({ val: r.val, label: String(r.val), count: r.cnt }));
+    } catch (err) {
+      optionsDiv.innerHTML = `<div style="padding:8px 12px;color:var(--error);font-size:11px">Error: ${err.message}</div>`;
+      return;
+    }
+  }
+
+  optionsDiv.innerHTML = '';
+  const selected = tableMultiFilters[tableName][preset.col] || new Set();
+
+  rows.forEach(row => {
+    const div = document.createElement('div');
+    div.className = 'multi-filter-option';
+
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    cb.checked = [...selected].some(v => String(v) === String(row.val));
+    cb.onclick = e => e.stopPropagation();
+
+    const lbl = document.createElement('span'); lbl.className = 'multi-filter-option-label';
+    lbl.textContent = row.label;
+
+    div.append(cb, lbl);
+
+    if (row.count !== undefined) {
+      const cnt = document.createElement('span'); cnt.className = 'multi-filter-option-count';
+      cnt.textContent = row.count;
+      div.appendChild(cnt);
+    }
+
+    div.onclick = e => {
+      e.stopPropagation();
+      cb.checked = !cb.checked;
+      toggleMultiFilterValue(tableName, preset, row.val, cb.checked);
+    };
+
+    optionsDiv.appendChild(div);
+  });
+}
+
+function toggleMultiFilterValue(tableName, preset, val, checked) {
+  if (!tableMultiFilters[tableName][preset.col]) tableMultiFilters[tableName][preset.col] = new Set();
+  const set = tableMultiFilters[tableName][preset.col];
+  if (checked) {
+    set.add(val);
+    delete tableFilters[tableName][preset.col]; // mutually exclusive with single filter
+  } else {
+    for (const v of set) { if (String(v) === String(val)) { set.delete(v); break; } }
+  }
+  rebuildAndRun(tableName);
+}
+
+function clearMultiFilter(tableName, col) {
+  delete tableMultiFilters[tableName][col];
+  rebuildAndRun(tableName);
 }
 
 async function queryDuckDB(sql, context) {
@@ -395,6 +750,9 @@ async function loadDriversTable(customSQL) {
       paginationPageSize: 20,
       onCellDoubleClicked: (event) => {
         filterTableByCell('drivers', event.colDef.field, event.value);
+      },
+      onColumnHeaderClicked: (event) => {
+        showColumnFacet('drivers', event.column.getColId());
       }
     };
 
@@ -405,6 +763,14 @@ async function loadDriversTable(customSQL) {
 
     driversGrid = agGrid.createGrid(document.getElementById('driversGrid'), gridOptions);
 
+    if (!quickFiltersInitialized.has('drivers')) {
+      quickFiltersInitialized.add('drivers');
+      initQuickFilters('drivers');
+    } else {
+      updateQuickFilterStates('drivers');
+    }
+    renderActiveFilters('drivers');
+    if (currentFacetColumns['drivers']) showColumnFacet('drivers', currentFacetColumns['drivers']);
     setTableStatus('drivers', 'success', `${data.length} rows`);
   } catch (err) {
     console.error('Failed to load drivers table:', err);
@@ -425,6 +791,9 @@ async function runDriversQuery(skipClearFilters = false) {
   // Clear filters when running a manual query (but not when called from filterTableByCell)
   if (!skipClearFilters) {
     tableFilters.drivers = {};
+    tableMultiFilters.drivers = {};
+    closeAllDropdowns();
+    closeColumnFacet('drivers');
   }
 
   await loadDriversTable();
@@ -492,6 +861,9 @@ async function loadReleasesTable(customSQL) {
       paginationPageSize: 50,
       onCellDoubleClicked: (event) => {
         filterTableByCell('releases', event.colDef.field, event.value);
+      },
+      onColumnHeaderClicked: (event) => {
+        showColumnFacet('releases', event.column.getColId());
       }
     };
 
@@ -502,6 +874,14 @@ async function loadReleasesTable(customSQL) {
 
     releasesGrid = agGrid.createGrid(document.getElementById('releasesGrid'), gridOptions);
 
+    if (!quickFiltersInitialized.has('releases')) {
+      quickFiltersInitialized.add('releases');
+      initQuickFilters('releases');
+    } else {
+      updateQuickFilterStates('releases');
+    }
+    renderActiveFilters('releases');
+    if (currentFacetColumns['releases']) showColumnFacet('releases', currentFacetColumns['releases']);
     setTableStatus('releases', 'success', `${data.length} rows`);
   } catch (err) {
     console.error('Failed to load releases table:', err);
@@ -522,6 +902,9 @@ async function runReleasesQuery(skipClearFilters = false) {
   // Clear filters when running a manual query (but not when called from filterTableByCell)
   if (!skipClearFilters) {
     tableFilters.releases = {};
+    tableMultiFilters.releases = {};
+    closeAllDropdowns();
+    closeColumnFacet('releases');
   }
 
   await loadReleasesTable();
@@ -585,6 +968,9 @@ async function loadLibrariesTable(customSQL) {
       paginationPageSize: 50,
       onCellDoubleClicked: (event) => {
         filterTableByCell('libraries', event.colDef.field, event.value);
+      },
+      onColumnHeaderClicked: (event) => {
+        showColumnFacet('libraries', event.column.getColId());
       }
     };
 
@@ -595,6 +981,14 @@ async function loadLibrariesTable(customSQL) {
 
     librariesGrid = agGrid.createGrid(document.getElementById('librariesGrid'), gridOptions);
 
+    if (!quickFiltersInitialized.has('libraries')) {
+      quickFiltersInitialized.add('libraries');
+      initQuickFilters('libraries');
+    } else {
+      updateQuickFilterStates('libraries');
+    }
+    renderActiveFilters('libraries');
+    if (currentFacetColumns['libraries']) showColumnFacet('libraries', currentFacetColumns['libraries']);
     setTableStatus('libraries', 'success', `${data.length} rows`);
   } catch (err) {
     console.error('Failed to load libraries table:', err);
@@ -615,6 +1009,9 @@ async function runLibrariesQuery(skipClearFilters = false) {
   // Clear filters when running a manual query (but not when called from filterTableByCell)
   if (!skipClearFilters) {
     tableFilters.libraries = {};
+    tableMultiFilters.libraries = {};
+    closeAllDropdowns();
+    closeColumnFacet('libraries');
   }
 
   await loadLibrariesTable();
@@ -674,6 +1071,9 @@ async function loadSymbolsTable(customSQL) {
       paginationPageSize: 100,
       onCellDoubleClicked: (event) => {
         filterTableByCell('symbols', event.colDef.field, event.value);
+      },
+      onColumnHeaderClicked: (event) => {
+        showColumnFacet('symbols', event.column.getColId());
       }
     };
 
@@ -684,6 +1084,14 @@ async function loadSymbolsTable(customSQL) {
 
     symbolsGrid = agGrid.createGrid(document.getElementById('symbolsGrid'), gridOptions);
 
+    if (!quickFiltersInitialized.has('symbols')) {
+      quickFiltersInitialized.add('symbols');
+      initQuickFilters('symbols');
+    } else {
+      updateQuickFilterStates('symbols');
+    }
+    renderActiveFilters('symbols');
+    if (currentFacetColumns['symbols']) showColumnFacet('symbols', currentFacetColumns['symbols']);
     setTableStatus('symbols', 'success', `${data.length} rows`);
   } catch (err) {
     console.error('Failed to load symbols table:', err);
@@ -704,6 +1112,9 @@ async function runSymbolsQuery(skipClearFilters = false) {
   // Clear filters when running a manual query (but not when called from filterTableByCell)
   if (!skipClearFilters) {
     tableFilters.symbols = {};
+    tableMultiFilters.symbols = {};
+    closeAllDropdowns();
+    closeColumnFacet('symbols');
   }
 
   await loadSymbolsTable();
@@ -767,6 +1178,9 @@ async function loadDependenciesTable(customSQL) {
       paginationPageSize: 100,
       onCellDoubleClicked: (event) => {
         filterTableByCell('dependencies', event.colDef.field, event.value);
+      },
+      onColumnHeaderClicked: (event) => {
+        showColumnFacet('dependencies', event.column.getColId());
       }
     };
 
@@ -777,6 +1191,14 @@ async function loadDependenciesTable(customSQL) {
 
     dependenciesGrid = agGrid.createGrid(document.getElementById('dependenciesGrid'), gridOptions);
 
+    if (!quickFiltersInitialized.has('dependencies')) {
+      quickFiltersInitialized.add('dependencies');
+      initQuickFilters('dependencies');
+    } else {
+      updateQuickFilterStates('dependencies');
+    }
+    renderActiveFilters('dependencies');
+    if (currentFacetColumns['dependencies']) showColumnFacet('dependencies', currentFacetColumns['dependencies']);
     setTableStatus('dependencies', 'success', `${data.length} rows`);
   } catch (err) {
     console.error('Failed to load dependencies table:', err);
@@ -797,6 +1219,9 @@ async function runDependenciesQuery(skipClearFilters = false) {
   // Clear filters when running a manual query (but not when called from filterTableByCell)
   if (!skipClearFilters) {
     tableFilters.dependencies = {};
+    tableMultiFilters.dependencies = {};
+    closeAllDropdowns();
+    closeColumnFacet('dependencies');
   }
 
   await loadDependenciesTable();
@@ -809,6 +1234,8 @@ window.runReleasesQuery = runReleasesQuery;
 window.runLibrariesQuery = runLibrariesQuery;
 window.runSymbolsQuery = runSymbolsQuery;
 window.runDependenciesQuery = runDependenciesQuery;
+window.closeColumnFacet = closeColumnFacet;
+window.closeAllDropdowns = closeAllDropdowns;
 
 async function loadInitialStats() {
   try {
@@ -1034,6 +1461,9 @@ document.addEventListener('DOMContentLoaded', () => {
       switchTab(tabName);
     });
   });
+
+  // Close multiselect dropdowns when clicking anywhere outside them
+  document.addEventListener('click', () => closeAllDropdowns());
 
   // Set up cross-chart brush listeners
   setupBrushHandlers();

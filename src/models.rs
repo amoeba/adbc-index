@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Source type for a driver
 #[derive(Debug, Clone)]
@@ -65,7 +66,7 @@ impl DriverConfig {
 }
 
 /// A release record - one row per driver release
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseRecord {
     pub name: String,
     pub release_tag: String,
@@ -83,7 +84,7 @@ pub struct ReleaseRecord {
 }
 
 /// A library record - one row per shared library
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryRecord {
     pub name: String,
     pub release_tag: String,
@@ -102,7 +103,7 @@ pub struct LibraryRecord {
 }
 
 /// A driver record - one row per driver
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverRecord {
     pub name: String,
     pub repo_owner: String,
@@ -117,7 +118,7 @@ pub struct DriverRecord {
 }
 
 /// A dependency record - one row per dynamic library dependency
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyRecord {
     pub name: String,
     pub release_tag: String,
@@ -134,7 +135,7 @@ pub struct DependencyRecord {
 }
 
 /// A symbol record - one row per exported symbol
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolRecord {
     pub name: String,
     pub release_tag: String,

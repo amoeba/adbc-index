@@ -128,6 +128,18 @@
     </div>
     <div id="driversError" class="query-error"></div>
   </div>
+  <div class="filter-area">
+    <div class="quick-filters" id="driversQuickFilters"></div>
+    <div class="active-filters" id="driversActiveFilters"></div>
+    <div class="column-facet hidden" id="driversColumnFacet">
+      <div class="column-facet-header">
+        <span class="column-facet-col-name" id="driversFacetColName"></span>
+        <span class="column-facet-hint">click a value to filter &middot; click again to clear</span>
+        <button class="column-facet-close" onclick="closeColumnFacet('drivers')">&times;</button>
+      </div>
+      <div class="column-facet-values" id="driversFacetValues"></div>
+    </div>
+  </div>
   <div id="driversGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
@@ -147,6 +159,18 @@
       <button class="sql-query-button" onclick="runReleasesQuery()">Run Query ⏎</button>
     </div>
     <div id="releasesError" class="query-error"></div>
+  </div>
+  <div class="filter-area">
+    <div class="quick-filters" id="releasesQuickFilters"></div>
+    <div class="active-filters" id="releasesActiveFilters"></div>
+    <div class="column-facet hidden" id="releasesColumnFacet">
+      <div class="column-facet-header">
+        <span class="column-facet-col-name" id="releasesFacetColName"></span>
+        <span class="column-facet-hint">click a value to filter &middot; click again to clear</span>
+        <button class="column-facet-close" onclick="closeColumnFacet('releases')">&times;</button>
+      </div>
+      <div class="column-facet-values" id="releasesFacetValues"></div>
+    </div>
   </div>
   <div id="releasesGrid" class="ag-theme-alpine-dark"></div>
 </div>
@@ -168,6 +192,18 @@
     </div>
     <div id="librariesError" class="query-error"></div>
   </div>
+  <div class="filter-area">
+    <div class="quick-filters" id="librariesQuickFilters"></div>
+    <div class="active-filters" id="librariesActiveFilters"></div>
+    <div class="column-facet hidden" id="librariesColumnFacet">
+      <div class="column-facet-header">
+        <span class="column-facet-col-name" id="librariesFacetColName"></span>
+        <span class="column-facet-hint">click a value to filter &middot; click again to clear</span>
+        <button class="column-facet-close" onclick="closeColumnFacet('libraries')">&times;</button>
+      </div>
+      <div class="column-facet-values" id="librariesFacetValues"></div>
+    </div>
+  </div>
   <div id="librariesGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
@@ -188,6 +224,18 @@
     </div>
     <div id="symbolsError" class="query-error"></div>
   </div>
+  <div class="filter-area">
+    <div class="quick-filters" id="symbolsQuickFilters"></div>
+    <div class="active-filters" id="symbolsActiveFilters"></div>
+    <div class="column-facet hidden" id="symbolsColumnFacet">
+      <div class="column-facet-header">
+        <span class="column-facet-col-name" id="symbolsFacetColName"></span>
+        <span class="column-facet-hint">click a value to filter &middot; click again to clear</span>
+        <button class="column-facet-close" onclick="closeColumnFacet('symbols')">&times;</button>
+      </div>
+      <div class="column-facet-values" id="symbolsFacetValues"></div>
+    </div>
+  </div>
   <div id="symbolsGrid" class="ag-theme-alpine-dark"></div>
 </div>
 </div>
@@ -207,6 +255,18 @@
       <button class="sql-query-button" onclick="runDependenciesQuery()">Run Query ⏎</button>
     </div>
     <div id="dependenciesError" class="query-error"></div>
+  </div>
+  <div class="filter-area">
+    <div class="quick-filters" id="dependenciesQuickFilters"></div>
+    <div class="active-filters" id="dependenciesActiveFilters"></div>
+    <div class="column-facet hidden" id="dependenciesColumnFacet">
+      <div class="column-facet-header">
+        <span class="column-facet-col-name" id="dependenciesFacetColName"></span>
+        <span class="column-facet-hint">click a value to filter &middot; click again to clear</span>
+        <button class="column-facet-close" onclick="closeColumnFacet('dependencies')">&times;</button>
+      </div>
+      <div class="column-facet-values" id="dependenciesFacetValues"></div>
+    </div>
   </div>
   <div id="dependenciesGrid" class="ag-theme-alpine-dark"></div>
 </div>

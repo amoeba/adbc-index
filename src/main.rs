@@ -71,6 +71,39 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Locate the project root (the directory containing drivers.toml) and
+    // change into it so all relative paths (cache/, dist/, templates/) work
+    // regardless of which directory the user invokes the binary from.
+    let project_root = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| {
+            let mut dir = cwd.as_path();
+            loop {
+                if dir.join("drivers.toml").exists() {
+                    return Some(dir.to_path_buf());
+                }
+                match dir.parent() {
+                    Some(parent) => dir = parent,
+                    None => return None,
+                }
+            }
+        });
+
+    match project_root {
+        Some(root) => {
+            if let Err(e) = std::env::set_current_dir(&root) {
+                eprintln!("Warning: could not change to project root {}: {}", root.display(), e);
+            }
+        }
+        None => {
+            eprintln!(
+                "Error: could not find drivers.toml in the current directory or any parent.\n\
+                 Run adbc-index from the project root."
+            );
+            std::process::exit(1);
+        }
+    }
+
     match cli.command {
         Commands::Download { driver } => download(driver).await,
         Commands::Analyze => analyze().await,
@@ -880,7 +913,10 @@ fn read_releases_from_cache(
 
             // Skip .sha256 files and hidden files
             let filename = asset_entry.file_name().to_string_lossy().to_string();
-            if filename.ends_with(".sha256") || filename.starts_with('.') {
+            if filename.ends_with(".sha256")
+                || filename.ends_with(".analysis.json")
+                || filename.starts_with('.')
+            {
                 continue;
             }
 
@@ -988,6 +1024,64 @@ async fn process_driver(
             if !is_driver_artifact(&artifact_meta.file_format) {
                 continue;
             }
+
+            // ── Analysis cache check ──────────────────────────────────────
+            // Locate the artifact in the cache directory so we can read the
+            // sidecar files (.sha256, .analysis.json) without extracting.
+            let artifact_path =
+                find_artifact_path(&cache_dir, &driver.name, &tag, &asset.name);
+
+            if let Some(ref apath) = artifact_path {
+                if let Some(cached) = load_analysis_cache(apath) {
+                    // Cache hit: push the pre-computed records and skip all
+                    // extraction / parsing work.
+                    if let Some(lib_rec) = cached.library_record {
+                        let os = lib_rec.os.clone();
+                        let arch = lib_rec.arch.clone();
+                        let is_universal = arch.len() > 1;
+
+                        library_records.push(lib_rec);
+                        symbol_records.extend(cached.symbol_records);
+                        dependency_records.extend(cached.dependency_records);
+                        library_count += 1;
+
+                        // Aggregate release data (identical logic to the miss path below)
+                        let key = (driver.name.clone(), tag.clone());
+                        if let Some(entry) = release_data_vec.iter_mut().find(|(k, _)| k == &key) {
+                            entry.1 .3.insert(os.clone());
+                            for av in arch.iter() { entry.1 .4.insert(av.clone()); }
+                            if is_universal {
+                                entry.1 .5 = true;
+                                let ua = entry.1 .6.get_or_insert_with(std::collections::HashSet::new);
+                                for av in arch.iter() { ua.insert(av.clone()); }
+                            }
+                        } else {
+                            let mut os_set = std::collections::HashSet::new();
+                            let mut arch_set = std::collections::HashSet::new();
+                            os_set.insert(os.clone());
+                            for av in arch.iter() { arch_set.insert(av.clone()); }
+                            let uba = if is_universal {
+                                let mut s = std::collections::HashSet::new();
+                                for av in arch.iter() { s.insert(av.clone()); }
+                                Some(s)
+                            } else { None };
+                            release_data_vec.push((
+                                key,
+                                (version.clone(), published_date, release_url.clone(),
+                                 os_set, arch_set, is_universal, uba),
+                            ));
+                        }
+                    }
+                    continue; // ← skip extraction entirely
+                }
+            }
+            // ── End cache check ───────────────────────────────────────────
+
+            // Record slice offsets so we can snapshot the new records after
+            // analysis and write them to the cache sidecar.
+            let lib_idx_before  = library_records.len();
+            let sym_idx_before  = symbol_records.len();
+            let dep_idx_before  = dependency_records.len();
 
             // Extract archive and find shared library
             let library_info =
@@ -1114,6 +1208,22 @@ async fn process_driver(
                     // Track library count
                     library_count += 1;
 
+                    // ── Save analysis cache sidecar ───────────────────────────
+                    if let Some(ref apath) = artifact_path {
+                        if let Some(sha256) = read_artifact_sha256(apath) {
+                            let cached_lib = library_records.get(lib_idx_before).cloned();
+                            let cached_syms = symbol_records[sym_idx_before..].to_vec();
+                            let cached_deps = dependency_records[dep_idx_before..].to_vec();
+                            save_analysis_cache(apath, &ArtifactAnalysis {
+                                cache_version: ANALYSIS_CACHE_VERSION,
+                                artifact_sha256: sha256,
+                                library_record: cached_lib,
+                                symbol_records: cached_syms,
+                                dependency_records: cached_deps,
+                            });
+                        }
+                    }
+
                     // Aggregate release data
                     let key = (driver.name.clone(), tag.clone());
 
@@ -1200,6 +1310,87 @@ async fn process_driver(
         repo_name,
         library_count,
     })
+}
+
+// ── Analysis cache ────────────────────────────────────────────────────────────
+//
+// After analysing an artifact we write a JSON sidecar next to it:
+//   cache/{driver}/{source}/{tag}/artifact.tar.gz.analysis.json
+//
+// On the next `analyze` run we load the sidecar if the artifact SHA256 still
+// matches and the cache-format version is current, skipping the expensive
+// extract / goblin / capstone work entirely.
+
+/// Bump this whenever the analysis logic changes in a way that would produce
+/// different results for the same binary.
+const ANALYSIS_CACHE_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ArtifactAnalysis {
+    cache_version: u32,
+    /// SHA256 of the artifact archive (matches the .sha256 sidecar).
+    artifact_sha256: String,
+    library_record: Option<models::LibraryRecord>,
+    symbol_records: Vec<models::SymbolRecord>,
+    dependency_records: Vec<models::DependencyRecord>,
+}
+
+/// Return the path of the artifact file in the cache, searching across all
+/// source sub-directories.
+fn find_artifact_path(
+    cache_dir: &Path,
+    driver_name: &str,
+    release_tag: &str,
+    artifact_name: &str,
+) -> Option<std::path::PathBuf> {
+    let sanitized_tag = ReleaseRecord::sanitize_tag_for_path(release_tag);
+    let driver_cache_dir = cache_dir.join(driver_name);
+    if !driver_cache_dir.exists() {
+        return None;
+    }
+    if let Ok(entries) = std::fs::read_dir(&driver_cache_dir) {
+        for entry in entries.flatten() {
+            let source_path = entry.path();
+            if !source_path.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let candidate = source_path.join(&sanitized_tag).join(artifact_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Read the hex SHA256 stored in the .sha256 sidecar file.
+fn read_artifact_sha256(artifact_path: &Path) -> Option<String> {
+    let sidecar = format!("{}.sha256", artifact_path.display());
+    std::fs::read_to_string(sidecar).ok().map(|s| s.trim().to_string())
+}
+
+/// Load a valid analysis cache for the given artifact, or `None` on any miss.
+fn load_analysis_cache(artifact_path: &Path) -> Option<ArtifactAnalysis> {
+    let cache_path = format!("{}.analysis.json", artifact_path.display());
+    let content = std::fs::read_to_string(&cache_path).ok()?;
+    let cached: ArtifactAnalysis = serde_json::from_str(&content).ok()?;
+    if cached.cache_version != ANALYSIS_CACHE_VERSION {
+        return None;
+    }
+    if let Some(expected) = read_artifact_sha256(artifact_path) {
+        if cached.artifact_sha256 != expected {
+            return None;
+        }
+    }
+    Some(cached)
+}
+
+/// Persist an analysis result as a JSON sidecar next to the artifact.
+fn save_analysis_cache(artifact_path: &Path, analysis: &ArtifactAnalysis) {
+    let cache_path = format!("{}.analysis.json", artifact_path.display());
+    if let Ok(json) = serde_json::to_string(analysis) {
+        let _ = std::fs::write(cache_path, json);
+    }
 }
 
 /// Information about an extracted shared library
@@ -1428,7 +1619,7 @@ async fn html() -> Result<()> {
         || !dependencies_path.exists()
     {
         return Err(error::AdbcIndexError::Config(
-            "Parquet files not found. Run 'adbc-index build' first.".to_string(),
+            "Parquet files not found. Run 'adbc-index analyze' first.".to_string(),
         ));
     }
 
