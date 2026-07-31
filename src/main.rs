@@ -140,7 +140,8 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
     }
 
     // Load configuration
-    let mut drivers = config::load_config(&config)?;
+    let cfg = config::load_config(&config)?;
+    let mut drivers = cfg.drivers;
 
     // Filter to specific driver if requested
     if let Some(ref driver_name) = driver_filter {
@@ -227,19 +228,6 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                             true
                         });
                     }
-
-                    // Filter out semver pre-release versions (e.g. -alpha.1, -beta.2, -rc.1)
-                    // Catches cases where the GitHub prerelease flag was not set by the maintainer
-                    releases.retain(|release| {
-                        if let Some(version_str) =
-                            ReleaseRecord::parse_version(&release.tag_name)
-                        {
-                            if let Ok(version) = semver::Version::parse(&version_str) {
-                                return version.pre.is_empty();
-                            }
-                        }
-                        true
-                    });
 
                     if std::env::var("DEBUG").is_ok() {
                         eprintln!("DEBUG: Processing {} releases...", releases.len());
@@ -460,7 +448,8 @@ async fn analyze() -> Result<()> {
     let cache_dir = PathBuf::from("cache");
 
     // Load configuration
-    let drivers = config::load_config(&config)?;
+    let cfg = config::load_config(&config)?;
+    let drivers = cfg.drivers;
 
     use models::DriverRecord;
 
@@ -685,6 +674,11 @@ async fn analyze() -> Result<()> {
                     None
                 };
 
+                let is_prerelease = version.as_ref()
+                    .and_then(|v| semver::Version::parse(v).ok())
+                    .map(|v| !v.pre.is_empty())
+                    .unwrap_or(false);
+
                 models::ReleaseRecord {
                     name: name.clone(),
                     release_tag: release_tag.clone(),
@@ -699,6 +693,7 @@ async fn analyze() -> Result<()> {
                         .get(&name)
                         .map(|t| t == &release_tag)
                         .unwrap_or(false),
+                    is_prerelease,
                 }
             },
         )
@@ -773,7 +768,7 @@ async fn analyze() -> Result<()> {
 
     // Validate that all drivers from config are present in output
     println!("\n🔍 Validating output...");
-    let config_drivers = config::load_config(&config)?;
+    let config_drivers = config::load_config(&config)?.drivers;
     let expected_drivers: HashSet<String> = config_drivers
         .iter()
         .map(|d| d.name.clone())
@@ -1015,17 +1010,6 @@ async fn process_driver(
             true
         });
     }
-
-    // Filter out semver pre-release versions (e.g. -alpha.1, -beta.2, -rc.1)
-    // Catches cases where the GitHub prerelease flag was not set by the maintainer
-    releases.retain(|release| {
-        if let Some(version_str) = models::ReleaseRecord::parse_version(&release.tag_name) {
-            if let Ok(version) = semver::Version::parse(&version_str) {
-                return version.pre.is_empty();
-            }
-        }
-        true
-    });
 
     driver_spinner.set_message(format!("Processing {} releases", releases.len()));
 

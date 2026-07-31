@@ -30,5 +30,6 @@ pub fn create_releases_schema() -> Arc<Schema> {
             true,
         ),
         Field::new("is_latest", DataType::Boolean, false),
+        Field::new("is_prerelease", DataType::Boolean, false),
     ]))
 }

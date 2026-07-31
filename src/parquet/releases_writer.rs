@@ -142,6 +142,9 @@ impl ReleasesWriter {
             Arc::new(BooleanArray::from(
                 self.buffer.iter().map(|r| Some(r.is_latest)).collect::<Vec<_>>(),
             )),
+            Arc::new(BooleanArray::from(
+                self.buffer.iter().map(|r| Some(r.is_prerelease)).collect::<Vec<_>>(),
+            )),
         ];
 
         Ok(RecordBatch::try_new(self.schema.clone(), columns)?)

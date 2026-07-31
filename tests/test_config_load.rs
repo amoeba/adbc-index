@@ -4,7 +4,8 @@ use std::path::PathBuf;
 #[test]
 fn test_load_drivers_toml() {
     let config_path = PathBuf::from("drivers.toml");
-    let drivers = config::load_config(&config_path).expect("Failed to load config");
+    let cfg = config::load_config(&config_path).expect("Failed to load config");
+    let drivers = cfg.drivers;
 
     println!("\nLoaded {} drivers:", drivers.len());
     for driver in &drivers {

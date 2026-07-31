@@ -28,8 +28,13 @@ struct ConfigFile {
     drivers: HashMap<String, DriverValue>,
 }
 
+/// Top-level configuration returned by load_config.
+pub struct Config {
+    pub drivers: Vec<DriverConfig>,
+}
+
 /// Parse drivers.toml configuration file
-pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
+pub fn load_config(path: &Path) -> Result<Config> {
     let content = fs::read_to_string(path)?;
     let config: ConfigFile = toml::from_str(&content)?;
 
@@ -82,7 +87,9 @@ pub fn load_config(path: &Path) -> Result<Vec<DriverConfig>> {
         });
     }
 
-    Ok(configs)
+    Ok(Config {
+        drivers: configs,
+    })
 }
 
 /// Parse driver URL and determine source type
@@ -226,7 +233,8 @@ sqlite = "https://pypi.org/project/adbc-driver-sqlite/"
 "#
         )
         .unwrap();
-        let configs = load_config(file.path()).unwrap();
+        let cfg = load_config(file.path()).unwrap();
+        let configs = cfg.drivers;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "sqlite");
         assert_eq!(configs[0].sources.len(), 1);
@@ -244,7 +252,8 @@ version = ">=0.8.0"
 "#
         )
         .unwrap();
-        let configs = load_config(file.path()).unwrap();
+        let cfg = load_config(file.path()).unwrap();
+        let configs = cfg.drivers;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "duckdb");
         assert_eq!(configs[0].sources.len(), 1);
@@ -267,7 +276,8 @@ artifact_filter = "libduckdb-*"
 "#
         )
         .unwrap();
-        let configs = load_config(file.path()).unwrap();
+        let cfg = load_config(file.path()).unwrap();
+        let configs = cfg.drivers;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "duckdb");
         assert_eq!(configs[0].sources.len(), 1);
@@ -290,7 +300,8 @@ language = "go"
 "#
         )
         .unwrap();
-        let configs = load_config(file.path()).unwrap();
+        let cfg = load_config(file.path()).unwrap();
+        let configs = cfg.drivers;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "bigquery");
         assert_eq!(configs[0].sources.len(), 2);

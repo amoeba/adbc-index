@@ -88,12 +88,14 @@ impl GitHubClient {
                 break;
             }
 
-            // Skip draft and pre-release releases — only index stable, published releases
-            let stable: Vec<Release> = releases
+            // Skip draft releases — they are never meant for public consumption.
+            // We intentionally keep GH-flagged pre-releases; pre-release status
+            // is determined solely by semver parsing of the version string.
+            let non_draft: Vec<Release> = releases
                 .into_iter()
-                .filter(|r| !r.draft && !r.prerelease)
+                .filter(|r| !r.draft)
                 .collect();
-            all_releases.extend(stable);
+            all_releases.extend(non_draft);
             page += 1;
 
             // GitHub API has a max of 100 pages

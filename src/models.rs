@@ -81,6 +81,8 @@ pub struct ReleaseRecord {
     pub universal_binary_archs: Option<Vec<String>>,
     /// True if this is the latest release for this driver
     pub is_latest: bool,
+    /// True if this version is a semver pre-release (e.g. 1.0.0-alpha.1)
+    pub is_prerelease: bool,
 }
 
 /// A library record - one row per shared library
