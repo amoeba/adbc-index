@@ -228,6 +228,19 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                         });
                     }
 
+                    // Filter out semver pre-release versions (e.g. -alpha.1, -beta.2, -rc.1)
+                    // Catches cases where the GitHub prerelease flag was not set by the maintainer
+                    releases.retain(|release| {
+                        if let Some(version_str) =
+                            ReleaseRecord::parse_version(&release.tag_name)
+                        {
+                            if let Ok(version) = semver::Version::parse(&version_str) {
+                                return version.pre.is_empty();
+                            }
+                        }
+                        true
+                    });
+
                     if std::env::var("DEBUG").is_ok() {
                         eprintln!("DEBUG: Processing {} releases...", releases.len());
                     }
@@ -1002,6 +1015,17 @@ async fn process_driver(
             true
         });
     }
+
+    // Filter out semver pre-release versions (e.g. -alpha.1, -beta.2, -rc.1)
+    // Catches cases where the GitHub prerelease flag was not set by the maintainer
+    releases.retain(|release| {
+        if let Some(version_str) = models::ReleaseRecord::parse_version(&release.tag_name) {
+            if let Ok(version) = semver::Version::parse(&version_str) {
+                return version.pre.is_empty();
+            }
+        }
+        true
+    });
 
     driver_spinner.set_message(format!("Processing {} releases", releases.len()));
 
