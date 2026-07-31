@@ -103,7 +103,7 @@ fn parse_wheel_platform(platform: &str) -> (Option<String>, Option<Vec<String>>)
     let lower = platform.to_lowercase();
 
     // Determine OS
-    let os = if lower.starts_with("linux") {
+    let os = if lower.starts_with("linux") || lower.starts_with("manylinux") || lower.starts_with("musllinux") {
         Some("linux".to_string())
     } else if lower.starts_with("macosx") {
         Some("darwin".to_string())
