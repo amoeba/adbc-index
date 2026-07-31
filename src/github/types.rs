@@ -8,6 +8,10 @@ pub struct Release {
     pub published_at: Option<DateTime<Utc>>,
     pub html_url: String,
     pub assets: Vec<Asset>,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

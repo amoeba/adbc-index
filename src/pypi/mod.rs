@@ -35,6 +35,8 @@ pub fn pypi_to_github_releases(pypi_releases: Vec<PyPIRelease>, package: &str) -
                 published_at,
                 html_url: format!("https://pypi.org/project/{}/{}/", package, version),
                 assets,
+                draft: false,
+                prerelease: false,
             }
         })
         .collect()

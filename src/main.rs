@@ -950,6 +950,8 @@ fn read_releases_from_cache(
                     published_at,
                     html_url,
                     assets,
+                    draft: false,
+                    prerelease: false,
                 });
         }
     }

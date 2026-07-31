@@ -88,7 +88,12 @@ impl GitHubClient {
                 break;
             }
 
-            all_releases.extend(releases);
+            // Skip draft and pre-release releases — only index stable, published releases
+            let stable: Vec<Release> = releases
+                .into_iter()
+                .filter(|r| !r.draft && !r.prerelease)
+                .collect();
+            all_releases.extend(stable);
             page += 1;
 
             // GitHub API has a max of 100 pages
