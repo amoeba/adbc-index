@@ -1717,11 +1717,26 @@ async fn html() -> Result<()> {
         svg::generate_bar_chart(&dependencies_chart_csv, "Non-System Dependencies per Driver", "driver");
 
     // Get file sizes for download links
-    let drivers_size = csv_utils::format_file_size(std::fs::metadata(&drivers_path)?.len());
-    let releases_size = csv_utils::format_file_size(std::fs::metadata(&releases_path)?.len());
-    let libraries_size = csv_utils::format_file_size(std::fs::metadata(&libraries_path)?.len());
-    let symbols_size = csv_utils::format_file_size(std::fs::metadata(&symbols_path)?.len());
-    let dependencies_size = csv_utils::format_file_size(std::fs::metadata(&dependencies_path)?.len());
+    let drivers_meta = std::fs::metadata(&drivers_path)?;
+    let releases_meta = std::fs::metadata(&releases_path)?;
+    let libraries_meta = std::fs::metadata(&libraries_path)?;
+    let symbols_meta = std::fs::metadata(&symbols_path)?;
+    let dependencies_meta = std::fs::metadata(&dependencies_path)?;
+
+    let drivers_size = csv_utils::format_file_size(drivers_meta.len());
+    let releases_size = csv_utils::format_file_size(releases_meta.len());
+    let libraries_size = csv_utils::format_file_size(libraries_meta.len());
+    let symbols_size = csv_utils::format_file_size(symbols_meta.len());
+    let dependencies_size = csv_utils::format_file_size(dependencies_meta.len());
+
+    // Find the most recent modification time across all parquet files
+    let newest_mtime = [&drivers_meta, &releases_meta, &libraries_meta, &symbols_meta, &dependencies_meta]
+        .iter()
+        .filter_map(|m| m.modified().ok())
+        .max()
+        .unwrap_or(std::time::SystemTime::now());
+    let last_updated: chrono::DateTime<chrono::Utc> = newest_mtime.into();
+    let last_updated_str = last_updated.format("%Y-%m-%d %H:%M UTC").to_string();
 
     // Initialize Tera template engine
     let tera = match Tera::new("templates/**/*.tera") {
@@ -1749,6 +1764,7 @@ async fn html() -> Result<()> {
     context.insert("symbols_size", &symbols_size);
     context.insert("dependencies_size", &dependencies_size);
     context.insert("driver_languages_json", &driver_languages_json);
+    context.insert("last_updated", &last_updated_str);
 
     // Render template
     let html = match tera.render("index.html.tera", &context) {
