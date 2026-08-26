@@ -6,7 +6,14 @@ use std::path::Path;
 
 use crate::error::Result;
 
-/// ADBC status codes from adbc.h
+/// ADBC status codes from adbc.h (values 0-14).
+///
+/// We define this ourselves rather than pulling in `adbc_core::error::Status`
+/// because `adbc_core` depends on `arrow-array` and `arrow-schema`, which would
+/// be a heavy transitive dependency for a binary-analysis tool. `adbc_core`'s
+/// `Status` also has no `name()` method returning the canonical `ADBC_STATUS_*`
+/// string needed for the parquet output, and its variant names differ slightly
+/// (e.g. `IO`, `InvalidArguments`) from the C header spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum AdbcStatusCode {
@@ -22,8 +29,9 @@ pub enum AdbcStatusCode {
     Internal = 9,
     Io = 10,
     Cancelled = 11,
-    Unauthorized = 12,
-    Timeout = 13,
+    Timeout = 12,
+    Unauthenticated = 13,
+    Unauthorized = 14,
 }
 
 impl AdbcStatusCode {
@@ -41,8 +49,9 @@ impl AdbcStatusCode {
             9 => Some(Self::Internal),
             10 => Some(Self::Io),
             11 => Some(Self::Cancelled),
-            12 => Some(Self::Unauthorized),
-            13 => Some(Self::Timeout),
+            12 => Some(Self::Timeout),
+            13 => Some(Self::Unauthenticated),
+            14 => Some(Self::Unauthorized),
             _ => None,
         }
     }
@@ -61,10 +70,22 @@ impl AdbcStatusCode {
             Self::Internal => "ADBC_STATUS_INTERNAL",
             Self::Io => "ADBC_STATUS_IO",
             Self::Cancelled => "ADBC_STATUS_CANCELLED",
-            Self::Unauthorized => "ADBC_STATUS_UNAUTHORIZED",
             Self::Timeout => "ADBC_STATUS_TIMEOUT",
+            Self::Unauthenticated => "ADBC_STATUS_UNAUTHENTICATED",
+            Self::Unauthorized => "ADBC_STATUS_UNAUTHORIZED",
         }
     }
+}
+
+/// Returns true if the symbol is known to NOT return AdbcStatusCode.
+/// These functions have constant returns that are not status codes and
+/// should not be interpreted as such.
+fn does_not_return_status_code(name: &str) -> bool {
+    matches!(
+        name,
+        // Returns int (count of error details), not AdbcStatusCode
+        "AdbcErrorGetDetailCount"
+    )
 }
 
 /// Result of analyzing a function
@@ -279,7 +300,11 @@ fn analyze_x86_function(name: &str, bytes: &[u8]) -> StubAnalysis {
     // Try to detect simple constant return patterns using Capstone
     let constant = disassemble_x86_constant_return(bytes);
 
-    let status_code = constant.and_then(AdbcStatusCode::from_i32);
+    let status_code = if does_not_return_status_code(name) {
+        None
+    } else {
+        constant.and_then(AdbcStatusCode::from_i32)
+    };
     let is_stub = status_code == Some(AdbcStatusCode::NotImplemented);
 
     StubAnalysis {
@@ -303,7 +328,11 @@ fn analyze_arm64_function(name: &str, bytes: &[u8]) -> StubAnalysis {
 
     let constant = disassemble_arm64_constant_return(bytes);
 
-    let status_code = constant.and_then(AdbcStatusCode::from_i32);
+    let status_code = if does_not_return_status_code(name) {
+        None
+    } else {
+        constant.and_then(AdbcStatusCode::from_i32)
+    };
     let is_stub = status_code == Some(AdbcStatusCode::NotImplemented);
 
     StubAnalysis {
@@ -546,14 +575,16 @@ mod tests {
             AdbcStatusCode::from_i32(2),
             Some(AdbcStatusCode::NotImplemented)
         );
-        assert_eq!(AdbcStatusCode::from_i32(13), Some(AdbcStatusCode::Timeout));
+        assert_eq!(AdbcStatusCode::from_i32(12), Some(AdbcStatusCode::Timeout));
+        assert_eq!(AdbcStatusCode::from_i32(13), Some(AdbcStatusCode::Unauthenticated));
+        assert_eq!(AdbcStatusCode::from_i32(14), Some(AdbcStatusCode::Unauthorized));
     }
 
     #[test]
     fn test_status_code_from_i32_invalid() {
         // Test invalid status codes
         assert_eq!(AdbcStatusCode::from_i32(-1), None);
-        assert_eq!(AdbcStatusCode::from_i32(14), None);
+        assert_eq!(AdbcStatusCode::from_i32(15), None);
         assert_eq!(AdbcStatusCode::from_i32(999), None);
     }
 
@@ -567,6 +598,8 @@ mod tests {
         );
         assert_eq!(AdbcStatusCode::Unknown.name(), "ADBC_STATUS_UNKNOWN");
         assert_eq!(AdbcStatusCode::Timeout.name(), "ADBC_STATUS_TIMEOUT");
+        assert_eq!(AdbcStatusCode::Unauthenticated.name(), "ADBC_STATUS_UNAUTHENTICATED");
+        assert_eq!(AdbcStatusCode::Unauthorized.name(), "ADBC_STATUS_UNAUTHORIZED");
     }
 
     #[test]

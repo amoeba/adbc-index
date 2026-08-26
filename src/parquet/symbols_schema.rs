@@ -14,7 +14,7 @@ pub struct SymbolsBatchData {
     pub symbol_indices: Vec<i64>,
     pub is_stubs: Vec<bool>,
     pub constant_returns: Vec<Option<i64>>,
-    pub return_statuses: Vec<Option<String>>,
+    pub constant_return_names: Vec<Option<String>>,
     pub is_latests: Vec<bool>,
 }
 
@@ -34,7 +34,7 @@ pub fn symbols_schema() -> Schema {
         Field::new("symbol_index", DataType::Int64, false),
         Field::new("is_stub", DataType::Boolean, false),
         Field::new("constant_return", DataType::Int64, true),
-        Field::new("return_status", DataType::Utf8, true),
+        Field::new("constant_return_name", DataType::Utf8, true),
         Field::new("is_latest", DataType::Boolean, false),
     ])
 }
@@ -62,7 +62,7 @@ pub fn build_symbols_batch(data: SymbolsBatchData) -> Vec<ArrayRef> {
         Arc::new(Int64Array::from(data.symbol_indices)) as ArrayRef,
         Arc::new(BooleanArray::from(data.is_stubs)) as ArrayRef,
         Arc::new(Int64Array::from(data.constant_returns)) as ArrayRef,
-        Arc::new(StringArray::from(data.return_statuses)) as ArrayRef,
+        Arc::new(StringArray::from(data.constant_return_names)) as ArrayRef,
         Arc::new(BooleanArray::from(data.is_latests)) as ArrayRef,
     ]
 }

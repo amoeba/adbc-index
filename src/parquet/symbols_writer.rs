@@ -56,7 +56,7 @@ impl SymbolsWriter {
         let mut symbol_indices = Vec::new();
         let mut is_stubs = Vec::new();
         let mut constant_returns = Vec::new();
-        let mut return_statuses = Vec::new();
+        let mut constant_return_names = Vec::new();
         let mut is_latests = Vec::new();
 
         for record in &self.batch {
@@ -70,7 +70,7 @@ impl SymbolsWriter {
             symbol_indices.push(record.symbol_index);
             is_stubs.push(record.is_stub);
             constant_returns.push(record.constant_return.map(|v| v as i64));
-            return_statuses.push(record.return_status.clone());
+            constant_return_names.push(record.constant_return_name.clone());
             is_latests.push(record.is_latest);
         }
 
@@ -85,7 +85,7 @@ impl SymbolsWriter {
             symbol_indices,
             is_stubs,
             constant_returns,
-            return_statuses,
+            constant_return_names,
             is_latests,
         });
 

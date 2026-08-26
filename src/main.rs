@@ -1171,7 +1171,7 @@ async fn process_driver(
                                         symbol_index: idx as i64,
                                         is_stub: stub_info.map(|s| s.is_stub).unwrap_or(false),
                                         constant_return: stub_info.and_then(|s| s.constant_return),
-                                        return_status: stub_info.and_then(|s| {
+                                        constant_return_name: stub_info.and_then(|s| {
                                             s.status_code.map(|c| c.name().to_string())
                                         }),
                                         is_latest: false, // set after all releases are collected
