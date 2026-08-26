@@ -99,3 +99,17 @@ language = "c++"
 [drivers.spark]
 urls = ["https://github.com/adbc-drivers/spark"]
 language = "go"
+
+[drivers.cassandra]
+urls = ["https://github.com/adbc-drivers/cassandra"]
+language = "go"
+
+[drivers.presto]
+urls = ["https://github.com/adbc-drivers/presto"]
+language = "go"
+
+# chDB - embedded ClickHouse engine; ADBC driver lives in chdb-core, not the redirect repo adbc-drivers/chdb
+[drivers.chdb]
+urls = ["https://github.com/chdb-io/chdb-core"]
+artifact_filter = "*-libchdb.tar.gz"
+language = "c++"

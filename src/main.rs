@@ -1681,6 +1681,15 @@ async fn html() -> Result<()> {
         "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') GROUP BY name ORDER BY symbol_count DESC"
     )?;
 
+    // Latest-release-only versions of the two charts
+    let symbols_chart_latest_csv = query_duckdb(
+        "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') WHERE is_latest = true GROUP BY name ORDER BY symbol_count DESC"
+    )?;
+
+    let libraries_chart_latest_csv = query_duckdb(
+        "SELECT name, MEDIAN(library_size_bytes) as median_size FROM read_parquet('dist/libraries.parquet') WHERE is_latest = true GROUP BY name ORDER BY median_size DESC"
+    )?;
+
     // Query drivers by language
     let language_chart_csv = query_duckdb(
         "SELECT language, COUNT(*) as driver_count FROM read_parquet('dist/drivers.parquet') GROUP BY language ORDER BY driver_count DESC, language"
@@ -1717,8 +1726,12 @@ async fn html() -> Result<()> {
     let releases_chart_svg = svg::generate_bar_chart(&releases_chart_csv, "Releases per Driver", "driver");
     let libraries_chart_svg =
         svg::generate_box_plot(&libraries_chart_csv, "Library Size by Driver (MB)");
+    let libraries_chart_latest_svg =
+        svg::generate_bar_chart(&libraries_chart_latest_csv, "Library Size by Driver (MB)", "driver");
     let symbols_chart_svg =
         svg::generate_bar_chart(&symbols_chart_csv, "Unique Symbols per Driver", "driver");
+    let symbols_chart_latest_svg =
+        svg::generate_bar_chart(&symbols_chart_latest_csv, "Unique Symbols per Driver", "driver");
     let language_chart_svg =
         svg::generate_bar_chart(&language_chart_csv, "Drivers by Language", "language");
     let dependencies_chart_svg =
@@ -1763,7 +1776,9 @@ async fn html() -> Result<()> {
     context.insert("timeline_svg", &timeline_svg);
     context.insert("releases_chart_svg", &releases_chart_svg);
     context.insert("libraries_chart_svg", &libraries_chart_svg);
+    context.insert("libraries_chart_latest_svg", &libraries_chart_latest_svg);
     context.insert("symbols_chart_svg", &symbols_chart_svg);
+    context.insert("symbols_chart_latest_svg", &symbols_chart_latest_svg);
     context.insert("language_chart_svg", &language_chart_svg);
     context.insert("dependencies_chart_svg", &dependencies_chart_svg);
     context.insert("drivers_size", &drivers_size);
