@@ -1,11 +1,9 @@
 use crate::error::{AdbcIndexError, Result};
-use flate2::read::GzDecoder;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tar::Archive;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
@@ -125,11 +123,6 @@ impl DownloadManager {
                 if let Ok(computed_sha256) = compute_file_sha256(&cache_path).await {
                     if computed_sha256 == stored_sha256 {
                         // File exists and integrity verified
-                        // Extract .tar.gz if not already extracted
-                        if task.artifact_name.ends_with(".tar.gz") {
-                            let _ = extract_tar_gz(&cache_path).await;
-                        }
-
                         return Ok(DownloadResult {
                             task,
                             sha256: computed_sha256,
@@ -211,11 +204,6 @@ impl DownloadManager {
         let sha256_path = get_sha256_path(&cache_path);
         let _ = fs::write(&sha256_path, &sha256).await;
 
-        // Extract .tar.gz files after download
-        if task.artifact_name.ends_with(".tar.gz") {
-            let _ = extract_tar_gz(&cache_path).await;
-        }
-
         Ok(DownloadResult {
             task,
             sha256,
@@ -239,35 +227,6 @@ async fn compute_file_sha256(path: &Path) -> Result<String> {
     let content = fs::read(path).await?;
     let hash = Sha256::digest(&content);
     Ok(format!("{:x}", hash))
-}
-
-/// Extract a .tar.gz file to the same directory
-async fn extract_tar_gz(archive_path: &Path) -> Result<()> {
-    let archive_path = archive_path.to_path_buf();
-
-    tokio::task::spawn_blocking(move || {
-        // Get the directory where the archive is located
-        let extract_dir = archive_path
-            .parent()
-            .ok_or_else(|| AdbcIndexError::Download {
-                url: "".to_string(),
-                reason: "Invalid archive path".to_string(),
-            })?;
-
-        // Open and extract the archive
-        let file = std::fs::File::open(&archive_path)?;
-        let decoder = GzDecoder::new(file);
-        let mut archive = Archive::new(decoder);
-
-        archive.unpack(extract_dir)?;
-
-        Ok::<(), AdbcIndexError>(())
-    })
-    .await
-    .map_err(|e| AdbcIndexError::Download {
-        url: "".to_string(),
-        reason: format!("Extraction task failed: {}", e),
-    })?
 }
 
 /// Get the path for the SHA256 sidecar file
