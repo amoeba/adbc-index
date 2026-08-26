@@ -288,6 +288,44 @@
     font-weight: 500;
   }
 
+  .chart-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 4px;
+  }
+
+  .chart-header h3 {
+    margin: 0;
+  }
+
+  .chart-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 10px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+
+  .chart-toggle input[type="checkbox"] {
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+  }
+
+  .chart-note {
+    margin: 0 0 12px 0;
+    font-size: 9px;
+    color: var(--text-muted);
+    letter-spacing: 0.4px;
+    font-style: italic;
+  }
+
   .chart-container svg {
     filter: brightness(1.1);
   }

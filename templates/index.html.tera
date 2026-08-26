@@ -92,8 +92,16 @@
       {{ timeline_svg | safe }}
     </div>
     <div class="chart-container">
-      <h3>Library Size by Driver</h3>
-      {{ libraries_chart_svg | safe }}
+      <div class="chart-header">
+        <h3>Library Size by Driver</h3>
+        <label class="chart-toggle">
+          <input type="checkbox" id="librariesAllReleases">
+          All releases
+        </label>
+      </div>
+      <p class="chart-note">Latest release per driver &middot; median across platforms</p>
+      <div id="librariesChartLatest">{{ libraries_chart_latest_svg | safe }}</div>
+      <div id="librariesChartAll" style="display:none">{{ libraries_chart_svg | safe }}</div>
     </div>
   </div>
   <div class="charts-col">
@@ -108,8 +116,16 @@
   </div>
   <div class="charts-col">
     <div class="chart-container">
-      <h3>Unique Symbols per Driver</h3>
-      {{ symbols_chart_svg | safe }}
+      <div class="chart-header">
+        <h3>Unique Symbols per Driver</h3>
+        <label class="chart-toggle">
+          <input type="checkbox" id="symbolsAllReleases">
+          All releases
+        </label>
+      </div>
+      <p class="chart-note">Latest release per driver only</p>
+      <div id="symbolsChartLatest">{{ symbols_chart_latest_svg | safe }}</div>
+      <div id="symbolsChartAll" style="display:none">{{ symbols_chart_svg | safe }}</div>
     </div>
     <div class="chart-container">
       <h3>Non-System Dependencies per Driver</h3>

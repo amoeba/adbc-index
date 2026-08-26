@@ -37,6 +37,30 @@ function semverComparator(a, b) {
 // Both fields are Sets so any number of items can be co-highlighted.
 let brushState = { drivers: new Set(), languages: new Set() };
 
+// ── Chart view toggle (latest-only ↔ all releases) ───────────────────────────
+function toggleChartView(chartName) {
+  const checkbox = document.getElementById(chartName + 'AllReleases');
+  const latestDiv = document.getElementById(chartName + 'ChartLatest');
+  const allDiv = document.getElementById(chartName + 'ChartAll');
+  const note = latestDiv && latestDiv.closest('.chart-container').querySelector('.chart-note');
+  if (!checkbox || !latestDiv || !allDiv) return;
+  if (checkbox.checked) {
+    latestDiv.style.display = 'none';
+    allDiv.style.display = 'block';
+    if (note) note.style.display = 'none';
+  } else {
+    latestDiv.style.display = 'block';
+    allDiv.style.display = 'none';
+    if (note) note.style.display = 'block';
+  }
+}
+
+for (const _cname of ['libraries', 'symbols']) {
+  const _cb = document.getElementById(_cname + 'AllReleases');
+  if (_cb) _cb.addEventListener('change', () => toggleChartView(_cname));
+}
+
+
 /**
  * Highlight a collection of drivers (and optionally specific language bars).
  * When `explicitLanguages` is omitted the languages are derived automatically
