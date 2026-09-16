@@ -2,6 +2,19 @@
 
 Notes for AI agents working in this repo. Keep this up to date as decisions are made.
 
+## Commit style
+
+One logical change per commit. Do not bundle unrelated changes (e.g. a new driver
+entry + a bug fix) into a single commit just because they happened in the same session.
+
+Good splits:
+- `drivers.toml` change → its own commit
+- dependency/build fix → its own commit
+- bug fix in source code → its own commit
+
+Subject line: imperative mood, ≤72 chars, no period.
+Body: explain *what* changed and *why*; reference affected files/functions where useful.
+
 ## Pre-release drivers
 
 **Include them.** As of commit `56100e4`, we no longer filter out pre-release releases during
