@@ -406,7 +406,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             Some(github_token.clone()),
         )?;
 
-        let results = download_manager.download_all(download_tasks).await;
+        let results = download_manager.download_all(download_tasks, download_progress.bar()).await;
 
         let mut success_count = 0;
         let mut error_count = 0;
@@ -415,12 +415,10 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
             match result {
                 Ok(_) => {
                     success_count += 1;
-                    download_progress.inc(1);
                 }
                 Err(e) => {
                     eprintln!("  ⚠️  Download error: {}", e);
                     error_count += 1;
-                    download_progress.inc(1);
                 }
             }
         }

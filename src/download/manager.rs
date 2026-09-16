@@ -1,5 +1,5 @@
 use crate::error::{AdbcIndexError, Result};
-use futures::StreamExt;
+use futures::{stream::FuturesUnordered, StreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -73,25 +73,26 @@ impl DownloadManager {
         })
     }
 
-    /// Download all tasks concurrently with rate limiting
-    pub async fn download_all(&self, tasks: Vec<DownloadTask>) -> Vec<Result<DownloadResult>> {
-        let mut handles = Vec::new();
+    /// Download all tasks concurrently with rate limiting.
+    /// Increments `progress` by 1 each time a task finishes so the caller's
+    /// overall counter tracks real-time completion instead of jumping from 0
+    /// to N at the end.
+    pub async fn download_all(
+        &self,
+        tasks: Vec<DownloadTask>,
+        progress: &ProgressBar,
+    ) -> Vec<Result<DownloadResult>> {
+        let mut futures_set = FuturesUnordered::new();
 
         for task in tasks {
             let manager = self.clone_for_task();
-            let handle = tokio::spawn(async move { manager.download_task(task).await });
-            handles.push(handle);
+            futures_set.push(async move { manager.download_task(task).await });
         }
 
         let mut results = Vec::new();
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(e) => results.push(Err(AdbcIndexError::Download {
-                    url: "unknown".to_string(),
-                    reason: e.to_string(),
-                })),
-            }
+        while let Some(result) = futures_set.next().await {
+            progress.inc(1);
+            results.push(result);
         }
 
         results

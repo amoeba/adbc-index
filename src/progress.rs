@@ -85,6 +85,11 @@ impl ProgressTracker {
         self.main_bar.finish_and_clear();
     }
 
+    /// Get a reference to the underlying ProgressBar for passing to other components
+    pub fn bar(&self) -> &ProgressBar {
+        &self.main_bar
+    }
+
     /// Get a reference to the MultiProgress for advanced usage
     pub fn multi(&self) -> Arc<MultiProgress> {
         self.multi.clone()
