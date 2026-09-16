@@ -80,10 +80,6 @@ language = "rust"
 urls = ["https://github.com/adbc-drivers/sap-hana"]
 language = "go"
 
-[drivers.athena]
-urls = ["https://github.com/adbc-drivers/amazon-athena"]
-language = "rust"
-
 [drivers.quack]
 urls = ["https://github.com/adbc-drivers/quack"]
 language = "c++"
