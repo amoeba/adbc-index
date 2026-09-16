@@ -69,7 +69,7 @@ urls = ["https://github.com/adbc-drivers/trino"]
 language = "go"
 
 [drivers.oracle]
-urls = ["https://github.com/adbc-drivers/oracle"]
+urls = ["https://github.com/adbc-drivers/oracle-legacy"]
 language = "go"
 
 [drivers.teradata]
