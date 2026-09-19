@@ -117,13 +117,13 @@
   <div class="charts-col">
     <div class="chart-container">
       <div class="chart-header">
-        <h3>Unique Symbols per Driver</h3>
+        <h3>Unique ADBC Symbols per Driver</h3>
         <label class="chart-toggle">
           <input type="checkbox" id="symbolsAllReleases">
           All releases
         </label>
       </div>
-      <p class="chart-note">Latest release per driver only</p>
+      <p class="chart-note">Latest release per driver only &middot; <code>Adbc*</code> symbols</p>
       <div id="symbolsChartLatest">{{ symbols_chart_latest_svg | safe }}</div>
       <div id="symbolsChartAll" style="display:none">{{ symbols_chart_svg | safe }}</div>
     </div>
