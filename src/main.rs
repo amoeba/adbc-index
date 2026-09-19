@@ -451,6 +451,9 @@ async fn analyze() -> Result<()> {
 
     use models::DriverRecord;
 
+    // Configure symbol filter - only extract symbols starting with "Adbc"
+    let symbol_filter = symbols::SymbolFilter::default();
+
     // Create progress tracker
     let analyze_progress = progress::ProgressTracker::new(drivers.len() as u64, "Analyze");
     analyze_progress.set_message("Processing drivers");
@@ -459,12 +462,14 @@ async fn analyze() -> Result<()> {
     let mut tasks = FuturesUnordered::new();
     for driver in drivers {
         let cache_dir_clone = cache_dir.clone();
+        let symbol_filter_clone = symbol_filter.clone();
         let progress_multi = analyze_progress.multi();
 
         let task = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(process_driver(
                 driver,
                 cache_dir_clone,
+                symbol_filter_clone,
                 progress_multi,
             ))
         });
@@ -966,6 +971,7 @@ fn read_releases_from_cache(
 async fn process_driver(
     driver: models::DriverConfig,
     cache_dir: PathBuf,
+    symbol_filter: symbols::SymbolFilter,
     progress_multi: Arc<indicatif::MultiProgress>,
 ) -> Result<DriverProcessResult> {
     use models::{DependencyRecord, LibraryRecord, SymbolRecord};
@@ -1138,7 +1144,7 @@ async fn process_driver(
                             last_record.language = language;
                         }
 
-                        match symbols::extract_symbols_and_stubs(lib_path) {
+                        match symbols::extract_symbols_and_stubs(lib_path, &symbol_filter) {
                             Ok((syms, stub_analyses)) => {
                                 // Build map of symbol -> stub analysis
                                 let stub_map: std::collections::HashMap<
@@ -1325,7 +1331,7 @@ async fn process_driver(
 
 /// Bump this whenever the analysis logic changes in a way that would produce
 /// different results for the same binary.
-const ANALYSIS_CACHE_VERSION: u32 = 2;
+const ANALYSIS_CACHE_VERSION: u32 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ArtifactAnalysis {
@@ -1670,12 +1676,12 @@ async fn html() -> Result<()> {
 
     // Query symbol count per driver
     let symbols_chart_csv = query_duckdb(
-        "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') WHERE symbol LIKE 'Adbc%' GROUP BY name ORDER BY symbol_count DESC"
+        "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') GROUP BY name ORDER BY symbol_count DESC"
     )?;
 
     // Latest-release-only versions of the two charts
     let symbols_chart_latest_csv = query_duckdb(
-        "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') WHERE is_latest = true AND symbol LIKE 'Adbc%' GROUP BY name ORDER BY symbol_count DESC"
+        "SELECT name, COUNT(DISTINCT symbol) as symbol_count FROM read_parquet('dist/symbols.parquet') WHERE is_latest = true GROUP BY name ORDER BY symbol_count DESC"
     )?;
 
     let libraries_chart_latest_csv = query_duckdb(

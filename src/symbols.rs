@@ -10,6 +10,41 @@ use goblin::Object;
 use crate::error::Result;
 use crate::stub_detector::StubAnalysis;
 
+/// Configuration for symbol filtering
+#[derive(Debug, Clone)]
+pub struct SymbolFilter {
+    /// Prefixes to match (e.g., ["Adbc", "adbc"])
+    pub prefixes: Vec<String>,
+    /// If true, only include symbols matching prefixes. If false, include all.
+    pub enabled: bool,
+}
+
+impl SymbolFilter {
+    pub fn new(prefixes: Vec<String>) -> Self {
+        Self {
+            enabled: !prefixes.is_empty(),
+            prefixes,
+        }
+    }
+
+    pub fn matches(&self, symbol: &str) -> bool {
+        if !self.enabled {
+            return true;
+        }
+
+        self.prefixes
+            .iter()
+            .any(|prefix| symbol.starts_with(prefix))
+    }
+}
+
+impl Default for SymbolFilter {
+    fn default() -> Self {
+        // By default, only include symbols starting with "Adbc"
+        Self::new(vec!["Adbc".to_string()])
+    }
+}
+
 /// Extract strings from binary data sections (for language detection)
 /// This is useful for stripped binaries where symbols are removed but strings remain
 pub fn extract_binary_strings<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
@@ -43,7 +78,7 @@ pub fn extract_binary_strings<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
 
 /// Extract exported symbols from a shared library
 #[allow(dead_code)]
-pub fn extract_symbols<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
+pub fn extract_symbols<P: AsRef<Path>>(path: P, filter: &SymbolFilter) -> Result<Vec<String>> {
     use std::panic;
 
     let path = path.as_ref();
@@ -55,9 +90,9 @@ pub fn extract_symbols<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
         file.read_to_end(&mut buffer)?;
 
         let symbols = match Object::parse(&buffer)? {
-            Object::Elf(elf) => extract_elf_symbols(&elf),
-            Object::PE(pe) => extract_pe_symbols(&pe),
-            Object::Mach(mach) => extract_mach_symbols(&mach),
+            Object::Elf(elf) => extract_elf_symbols(&elf, filter),
+            Object::PE(pe) => extract_pe_symbols(&pe, filter),
+            Object::Mach(mach) => extract_mach_symbols(&mach, filter),
             _ => {
                 return Err(crate::error::AdbcIndexError::Config(format!(
                     "Unsupported binary format: {}",
@@ -81,7 +116,7 @@ pub fn extract_symbols<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
 }
 
 /// Extract symbols from ELF binary (Linux .so)
-fn extract_elf_symbols(elf: &Elf) -> Vec<String> {
+fn extract_elf_symbols(elf: &Elf, filter: &SymbolFilter) -> Vec<String> {
     let mut symbols = Vec::new();
 
     // Extract dynamic symbols (exported functions)
@@ -91,6 +126,7 @@ fn extract_elf_symbols(elf: &Elf) -> Vec<String> {
             if sym.st_type() == goblin::elf::sym::STT_FUNC
                 && (sym.st_bind() == goblin::elf::sym::STB_GLOBAL
                     || sym.st_bind() == goblin::elf::sym::STB_WEAK)
+                && filter.matches(name)
             {
                 symbols.push(name.to_string());
             }
@@ -103,13 +139,15 @@ fn extract_elf_symbols(elf: &Elf) -> Vec<String> {
 }
 
 /// Extract symbols from PE binary (Windows .dll)
-fn extract_pe_symbols(pe: &PE) -> Vec<String> {
+fn extract_pe_symbols(pe: &PE, filter: &SymbolFilter) -> Vec<String> {
     let mut symbols = Vec::new();
 
     // Extract exported functions
     for export in &pe.exports {
         if let Some(name) = export.name {
-            symbols.push(name.to_string());
+            if filter.matches(name) {
+                symbols.push(name.to_string());
+            }
         }
     }
 
@@ -119,7 +157,7 @@ fn extract_pe_symbols(pe: &PE) -> Vec<String> {
 }
 
 /// Extract symbols from Mach-O binary (macOS .dylib)
-fn extract_mach_symbols(mach: &Mach) -> Vec<String> {
+fn extract_mach_symbols(mach: &Mach, filter: &SymbolFilter) -> Vec<String> {
     let mut symbols = Vec::new();
 
     match mach {
@@ -128,7 +166,9 @@ fn extract_mach_symbols(mach: &Mach) -> Vec<String> {
             for (name, nlist) in macho.symbols().flatten() {
                 if nlist.is_global() && !nlist.is_undefined() {
                     let name = name.trim_start_matches('_');
-                    symbols.push(name.to_string());
+                    if filter.matches(name) {
+                        symbols.push(name.to_string());
+                    }
                 }
             }
         }
@@ -148,6 +188,7 @@ fn extract_mach_symbols(mach: &Mach) -> Vec<String> {
 /// This is more efficient than calling extract_symbols and analyze_stubs separately
 pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
     path: P,
+    filter: &SymbolFilter,
 ) -> Result<(Vec<String>, Vec<StubAnalysis>)> {
     let path = path.as_ref();
     let mut file = File::open(path)?;
@@ -158,12 +199,12 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
 
     let (symbols, stubs) = match object {
         Object::Elf(elf) => {
-            let symbols = extract_elf_symbols(&elf);
+            let symbols = extract_elf_symbols(&elf, filter);
             let stubs = crate::stub_detector::analyze_elf_stubs_with_buffer(&elf, &buffer)?;
             (symbols, stubs)
         }
         Object::PE(pe) => {
-            let symbols = extract_pe_symbols(&pe);
+            let symbols = extract_pe_symbols(&pe, filter);
             let stubs = crate::stub_detector::analyze_pe_stubs_with_buffer(&pe, &buffer)?;
             (symbols, stubs)
         }
@@ -171,7 +212,7 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
             // For Fat binaries, parse the first architecture
             let (symbols, stubs) = match &mach {
                 Mach::Binary(_) => {
-                    let symbols = extract_mach_symbols(&mach);
+                    let symbols = extract_mach_symbols(&mach, filter);
                     let stubs = crate::stub_detector::analyze_mach_stubs_with_buffer(&mach, &buffer)?;
                     (symbols, stubs)
                 }
@@ -188,7 +229,7 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
                                 let arch_slice = &buffer[start..end];
                                 if let Ok(arch_mach) = Mach::parse(arch_slice) {
                                     // Extract symbols and stubs from this architecture
-                                    let arch_symbols = extract_mach_symbols(&arch_mach);
+                                    let arch_symbols = extract_mach_symbols(&arch_mach, filter);
                                     let arch_stubs = crate::stub_detector::analyze_mach_stubs_with_buffer(
                                         &arch_mach,
                                         arch_slice,
@@ -226,4 +267,68 @@ pub fn extract_symbols_and_stubs<P: AsRef<Path>>(
     Ok((symbols, stubs))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn test_symbol_filter_default() {
+        let filter = SymbolFilter::default();
+
+        assert!(filter.enabled);
+        assert_eq!(filter.prefixes, vec!["Adbc"]);
+
+        // Should match symbols starting with "Adbc"
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("AdbcConnectionNew"));
+
+        // Should not match other symbols
+        assert!(!filter.matches("adbc_driver_init")); // lowercase
+        assert!(!filter.matches("MyAdbcFunction")); // prefix not at start
+        assert!(!filter.matches("sqlite3_open")); // different function
+    }
+
+    #[test]
+    fn test_symbol_filter_custom_prefixes() {
+        let filter = SymbolFilter::new(vec!["Adbc".to_string(), "sqlite3_".to_string()]);
+
+        assert!(filter.enabled);
+
+        // Should match both prefixes
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("sqlite3_open"));
+        assert!(filter.matches("sqlite3_close"));
+
+        // Should not match other symbols
+        assert!(!filter.matches("postgres_connect"));
+        assert!(!filter.matches("my_function"));
+    }
+
+    #[test]
+    fn test_symbol_filter_disabled() {
+        let filter = SymbolFilter::new(vec![]);
+
+        assert!(!filter.enabled);
+        assert!(filter.prefixes.is_empty());
+
+        // Should match everything when disabled
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("sqlite3_open"));
+        assert!(filter.matches("anything"));
+        assert!(filter.matches(""));
+    }
+
+    #[test]
+    fn test_symbol_filter_case_sensitive() {
+        let filter = SymbolFilter::new(vec!["Adbc".to_string()]);
+
+        // Case-sensitive matching
+        assert!(filter.matches("AdbcDriverInit"));
+        assert!(filter.matches("Adbc"));
+
+        // Should not match different case
+        assert!(!filter.matches("adbc_driver_init"));
+        assert!(!filter.matches("ADBC_DRIVER_INIT"));
+        assert!(!filter.matches("adbcDriverInit"));
+    }
+}
