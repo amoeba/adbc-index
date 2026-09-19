@@ -1,5 +1,10 @@
 name = "adbc"
 compatibility_date = "2026-02-03"
+main = "worker.js"
 
 [assets]
 directory = "./dist"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "adbc-index"
