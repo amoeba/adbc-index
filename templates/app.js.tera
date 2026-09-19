@@ -313,14 +313,14 @@ async function initDuckDB() {
     { name: 'drivers.parquet', id: 'drivers' },
     { name: 'releases.parquet', id: 'releases' },
     { name: 'libraries.parquet', id: 'libraries' },
-    { name: 'symbols.parquet', id: 'symbols' },
+    { name: 'symbols.parquet', id: 'symbols', url: 'https://pub-5ebd70c92d6c4d2ea4e63897c50fb130.r2.dev/symbols.parquet' },
     { name: 'dependencies.parquet', id: 'dependencies' }
   ];
 
   for (const file of files) {
     updateLoadingStep(`fetch-${file.name}`, 'active', `Fetching ${file.name}...`);
     try {
-      const response = await fetch(file.name);
+      const response = await fetch(file.url || file.name);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }

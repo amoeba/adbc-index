@@ -235,7 +235,7 @@
 <h2>Symbols</h2>
 <div class="download-inline">
   <span class="download-prefix">Download</span>
-  <a href="symbols.parquet" class="download-link" download>symbols.parquet ({{ symbols_size }})</a>
+  <a href="https://pub-5ebd70c92d6c4d2ea4e63897c50fb130.r2.dev/symbols.parquet" class="download-link" download>symbols.parquet ({{ symbols_size }})</a>
 </div>
 
 <div class="table-container">
