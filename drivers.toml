@@ -113,3 +113,7 @@ language = "go"
 urls = ["https://github.com/chdb-io/chdb-core"]
 artifact_filter = "*-libchdb.tar.gz"
 language = "c++"
+
+
+[drivers.firebolt]
+urls = ["# TODO: add source URL"]
