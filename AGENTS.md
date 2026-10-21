@@ -30,9 +30,19 @@ list, not just `dbc search`.
 Use `dbc search --json --pre` to get the authoritative list of drivers. Compare against
 `drivers.toml` to find gaps.
 
-### Known gaps (as of 2026-08-26)
+### Registry coverage
 
-All drivers from `dbc search --pre` are now covered in `drivers.toml`.
+All 25 drivers from `dbc search --json --pre` are covered in `drivers.toml`
+after adding `firebolt`. The public CDN index lists 22 drivers; the other three
+(`oracle`, `sap-hana`, `teradata`) use the private registry.
+
+### Firebolt findings
+
+- Source: `adbc-drivers/firebolt`; language: C++.
+- `v0.2.0` produces four libraries: Linux amd64/arm64, macOS arm64, Windows amd64.
+- `v0.1.1` downloads successfully but is absent from analysis output: its assets
+  are bare `.so` files, and `extract_and_find_library` in `src/main.rs` currently
+  only handles archives. Supporting direct shared libraries is a separate fix.
 
 Notes on non-obvious driver sources:
 - `chdb` — the ADBC driver lives in `chdb-io/chdb-core` (not the redirect repo `adbc-drivers/chdb`). Uses `artifact_filter = "*-libchdb.tar.gz"` to target dynamic libs only.

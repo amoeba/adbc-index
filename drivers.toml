@@ -29,6 +29,10 @@ language = "rust"
 urls = ["https://github.com/adbc-drivers/exasol"]
 language = "rust"
 
+[drivers.firebolt]
+urls = ["https://github.com/adbc-drivers/firebolt"]
+language = "c++"
+
 [drivers.flightsql]
 urls = ["https://pypi.org/project/adbc-driver-flightsql/"]
 language = "go"
