@@ -24,43 +24,45 @@ pub struct DriverConfig {
     pub name: String,
     pub sources: Vec<DriverSource>,
     pub version_req: Option<semver::VersionReq>,
-    pub artifact_filter: Option<String>,
+    pub artifact_filter: Option<Vec<String>>,
     pub language: Option<String>,
 }
 
 impl DriverConfig {
-    /// Check if an artifact filename matches the filter pattern
-    /// Returns true if no filter is set, or if the artifact matches the pattern
+    /// Check if an artifact filename matches the filter patterns.
+    /// Returns true if no filter is set, or if the artifact matches any pattern.
     pub fn matches_artifact(&self, filename: &str) -> bool {
         match &self.artifact_filter {
             None => true,
-            Some(pattern) => {
-                // Support glob-style patterns
-                if pattern.contains('*') || pattern.contains('?') {
-                    // Use glob matching
-                    if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
-                        return glob_pattern.matches(filename);
-                    }
-                    // If pattern compilation fails, fall through to prefix matching
-                }
+            Some(patterns) => patterns.iter().any(|pattern| Self::matches_pattern(pattern, filename)),
+        }
+    }
 
-                // Simple prefix/suffix/contains matching
-                if pattern.starts_with('*') && pattern.ends_with('*') {
-                    // *text* - contains
-                    let text = &pattern[1..pattern.len() - 1];
-                    filename.contains(text)
-                } else if let Some(suffix) = pattern.strip_prefix('*') {
-                    // *suffix - ends with
-                    filename.ends_with(suffix)
-                } else if pattern.ends_with('*') {
-                    // prefix* - starts with
-                    let prefix = &pattern[..pattern.len() - 1];
-                    filename.starts_with(prefix)
-                } else {
-                    // Exact match
-                    filename == pattern
-                }
+    fn matches_pattern(pattern: &str, filename: &str) -> bool {
+        // Support glob-style patterns
+        if pattern.contains('*') || pattern.contains('?') {
+            // Use glob matching
+            if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
+                return glob_pattern.matches(filename);
             }
+            // If pattern compilation fails, fall through to prefix matching
+        }
+
+        // Simple prefix/suffix/contains matching
+        if pattern.starts_with('*') && pattern.ends_with('*') {
+            // *text* - contains
+            let text = &pattern[1..pattern.len() - 1];
+            filename.contains(text)
+        } else if let Some(suffix) = pattern.strip_prefix('*') {
+            // *suffix - ends with
+            filename.ends_with(suffix)
+        } else if pattern.ends_with('*') {
+            // prefix* - starts with
+            let prefix = &pattern[..pattern.len() - 1];
+            filename.starts_with(prefix)
+        } else {
+            // Exact match
+            filename == pattern
         }
     }
 }
@@ -335,7 +337,7 @@ mod tests {
                 repo: "test".to_string(),
             }],
             version_req: None,
-            artifact_filter: Some("lib*".to_string()),
+            artifact_filter: Some(vec!["lib*".to_string()]),
             language: None,
         };
 
@@ -354,7 +356,7 @@ mod tests {
                 repo: "test".to_string(),
             }],
             version_req: None,
-            artifact_filter: Some("*.zip".to_string()),
+            artifact_filter: Some(vec!["*.zip".to_string()]),
             language: None,
         };
 
@@ -373,7 +375,7 @@ mod tests {
                 repo: "test".to_string(),
             }],
             version_req: None,
-            artifact_filter: Some("*linux*".to_string()),
+            artifact_filter: Some(vec!["*linux*".to_string()]),
             language: None,
         };
 
@@ -392,7 +394,7 @@ mod tests {
                 repo: "test".to_string(),
             }],
             version_req: None,
-            artifact_filter: Some("libduckdb-*.zip".to_string()),
+            artifact_filter: Some(vec!["libduckdb-*.zip".to_string()]),
             language: None,
         };
 

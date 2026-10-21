@@ -13,12 +13,28 @@ enum DriverValue {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl StringOrVec {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            StringOrVec::Single(s) => vec![s],
+            StringOrVec::Multiple(v) => v,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct DetailedDriverConfig {
     urls: Vec<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    artifact_filter: Option<String>,
+    artifact_filter: Option<StringOrVec>,
     #[serde(default)]
     language: Option<String>,
 }
@@ -65,7 +81,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
                 (
                     detailed.urls,
                     version_req,
-                    detailed.artifact_filter,
+                    detailed.artifact_filter.map(|f| f.into_vec()),
                     detailed.language,
                 )
             }
@@ -283,7 +299,7 @@ artifact_filter = "libduckdb-*"
         assert_eq!(configs[0].sources.len(), 1);
         assert!(configs[0].version_req.is_some());
         assert!(configs[0].artifact_filter.is_some());
-        assert_eq!(configs[0].artifact_filter.as_ref().unwrap(), "libduckdb-*");
+        assert_eq!(configs[0].artifact_filter.as_ref().unwrap(), &vec!["libduckdb-*".to_string()]);
 
         // Test artifact matching
         assert!(configs[0].matches_artifact("libduckdb-osx-universal.zip"));

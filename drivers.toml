@@ -89,10 +89,12 @@ urls = ["https://github.com/adbc-drivers/quack"]
 language = "c++"
 
 # DuckDB - Main DuckDB library exports ADBC symbols starting from v0.8.0
+# Pre-2.0: artifacts named libduckdb-linux-amd64.zip etc.
+# 2.0.0+: renamed to duckdb-shared-libs-linux-amd64.tar.gz
 [drivers.duckdb]
 urls = ["https://github.com/duckdb/duckdb"]
 version = ">=0.8.0"
-artifact_filter = "libduckdb-*"
+artifact_filter = ["libduckdb-*", "duckdb-shared-libs-*"]
 language = "c++"
 
 

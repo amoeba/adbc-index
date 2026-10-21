@@ -53,15 +53,23 @@ fn test_load_drivers_toml() {
 
     // Test artifact filter
     let artifact_filter = duckdb.artifact_filter.as_ref().unwrap();
-    println!("DuckDB artifact filter: {}", artifact_filter);
+    println!("DuckDB artifact filter: {:?}", artifact_filter);
 
     assert!(
         duckdb.matches_artifact("libduckdb-osx-universal.zip"),
-        "Should match libduckdb"
+        "Should match libduckdb zip"
     );
     assert!(
         duckdb.matches_artifact("libduckdb-linux-amd64.zip"),
-        "Should match libduckdb"
+        "Should match libduckdb zip"
+    );
+    assert!(
+        duckdb.matches_artifact("duckdb-shared-libs-linux-amd64.tar.gz"),
+        "Should match duckdb-shared-libs (2.0.0+ naming)"
+    );
+    assert!(
+        duckdb.matches_artifact("duckdb-shared-libs-osx-universal.tar.gz"),
+        "Should match duckdb-shared-libs (2.0.0+ naming)"
     );
     assert!(
         !duckdb.matches_artifact("duckdb_cli-osx-universal.zip"),
@@ -70,6 +78,14 @@ fn test_load_drivers_toml() {
     assert!(
         !duckdb.matches_artifact("duckdb_jdbc.jar"),
         "Should not match JDBC"
+    );
+    assert!(
+        !duckdb.matches_artifact("duckdb-cli-linux-amd64.tar.gz"),
+        "Should not match CLI (2.0.0+ naming)"
+    );
+    assert!(
+        !duckdb.matches_artifact("duckdb-static-libs-linux-amd64.tar.gz"),
+        "Should not match static libs"
     );
 
     println!("✓ DuckDB artifact filtering configured correctly!");
