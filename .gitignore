@@ -3,3 +3,5 @@ Cargo.lock
 
 dist
 cache
+node_modules
+.wrangler
