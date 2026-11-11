@@ -119,3 +119,7 @@ language = "go"
 urls = ["https://github.com/chdb-io/chdb-core"]
 artifact_filter = "*-libchdb.tar.gz"
 language = "c++"
+
+
+[drivers.mariadb]
+urls = ["# TODO: add source URL"]
