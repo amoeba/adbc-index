@@ -60,6 +60,8 @@ impl DriversWriter {
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
         let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
+        let registries: StringArray =
+            self.buffer.iter().map(|r| Some(r.registry.as_str())).collect();
 
         let repo_owners: StringArray = self
             .buffer
@@ -115,6 +117,7 @@ impl DriversWriter {
 
         let columns: Vec<ArrayRef> = vec![
             Arc::new(names),
+            Arc::new(registries),
             Arc::new(repo_owners),
             Arc::new(repo_names),
             Arc::new(release_counts),
