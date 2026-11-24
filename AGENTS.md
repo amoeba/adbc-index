@@ -32,14 +32,18 @@ Use `dbc search --json --pre` to get the authoritative list of drivers. Compare 
 
 ### Registry coverage
 
-All 27 drivers from `dbc search --json --pre` are covered in `drivers.toml`
-after adding `mariadb` and `motherduck` (2026-11-17). 24 are in the public
-registry; the other three (`oracle`, `sap-hana`, `teradata`) use the private
-registry.
+`drivers.toml` is not limited to drivers on the ADBC driver registry, and
+drivers aren't necessarily sourced from where the registry gets them (e.g.
+`db2` comes from PyPI). As of 2026-11-23, all 28 drivers from
+`dbc search --json --pre` are covered in `drivers.toml`; `oracle`,
+`sap-hana`, and `teradata` use the private registry.
 
 - `mariadb` — `adbc-drivers/mariadb`, Go, tags are `go/vX.Y.Z`.
 - `motherduck` — `adbc-drivers/motherduck`, C++, only `v0.1.0-alpha.1`
   (pre-release) at time of adding.
+- `db2` — sourced from PyPI (`adbc-driver-ibm-db2`), C++. The GitHub repo
+  `adbc-drivers/db2` is private, so its release assets 404 on public
+  download URLs.
 
 ### Firebolt findings
 
