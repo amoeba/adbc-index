@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub fn create_drivers_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
+        Field::new("registry", DataType::Utf8, false),
         Field::new("repo_owner", DataType::Utf8, true),
         Field::new("repo_name", DataType::Utf8, true),
         Field::new("release_count", DataType::Int64, false),

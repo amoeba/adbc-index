@@ -33,17 +33,38 @@ Use `dbc search --json --pre` to get the authoritative list of drivers. Compare 
 ### Registry coverage
 
 `drivers.toml` is not limited to drivers on the ADBC driver registry, and
-drivers aren't necessarily sourced from where the registry gets them (e.g.
-`db2` comes from PyPI). As of 2026-11-23, all 28 drivers from
-`dbc search --json --pre` are covered in `drivers.toml`; `oracle`,
-`sap-hana`, and `teradata` use the private registry.
+drivers aren't necessarily sourced from where the registry gets them. As of
+2026-11-24, all 28 drivers from `dbc search --json --pre` are covered in
+`drivers.toml`.
+
+A driver is identified by (registry, name), not name alone: `dbc search
+--json --pre` lists `oracle` twice, once without a `registry` field (public)
+and once with `registry: "private"`. Mirror that in `drivers.toml` with the
+optional `name` and `registry` fields (defaults: the table key, and
+`"public"`); the table key just needs to be unique and is the cache directory
+name and the `download <driver>` filter. `oracle-private`, `sap-hana`, and
+`teradata` are `registry = "private"`. All parquet files carry a `registry`
+column, and dashboard charts label non-public drivers `name (registry)`.
+
+Private GitHub repos (`db2`, `oracle-legacy`, `sap-hana`, `teradata`) work
+because downloads go through the API asset URL with `GITHUB_TOKEN`; the token
+needs read access to them. Their `browser_download_url`s 404 without auth.
 
 - `mariadb` — `adbc-drivers/mariadb`, Go, tags are `go/vX.Y.Z`.
 - `motherduck` — `adbc-drivers/motherduck`, C++, only `v0.1.0-alpha.1`
   (pre-release) at time of adding.
-- `db2` — sourced from PyPI (`adbc-driver-ibm-db2`), C++. The GitHub repo
-  `adbc-drivers/db2` is private, so its release assets 404 on public
-  download URLs.
+- `db2` — C++. Sources: private GitHub repo `adbc-drivers/db2` (tags
+  `vX.Y.Z` for driver builds, `python-vX.Y.Z` for the PyPI package, which has
+  no assets) plus PyPI `adbc-driver-ibm-db2`. The public registry CDN
+  (`https://dbc-cdn.columnar.tech`) serves `v0.1.0-beta.1`; its tarballs
+  differ in hash from the GitHub assets only because they add a `.sig` and a
+  rewritten MANIFEST — the `.so` is byte-identical.
+- `oracle` — two drivers. Public (`[drivers.oracle]`): ADBC Driver Foundry's
+  Rust driver in public `adbc-drivers/oracle`, `v0.8.0-beta.1`+. Private
+  (`[drivers.oracle-private]`): Columnar's Go driver in private
+  `adbc-drivers/oracle-legacy` (`go/vX.Y.Z`, named `red-o` through `0.3.0`).
+  Both set `language` explicitly; auto-detection labels the Rust build `c` on
+  most platforms. PyPI `adbc-driver-oracle` is an unrelated third-party driver.
 
 ### Firebolt findings
 

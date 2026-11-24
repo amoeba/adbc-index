@@ -21,14 +21,29 @@ impl DriverSource {
 /// Configuration for a single driver
 #[derive(Debug, Clone)]
 pub struct DriverConfig {
+    /// Unique config key (the `[drivers.<id>]` table name). Used for the cache
+    /// directory and the `download <driver>` filter.
+    pub id: String,
+    /// Driver name as listed in its registry. Not unique on its own: a driver
+    /// is identified by (registry, name).
     pub name: String,
+    /// Registry the driver is published in (e.g. "public", "private").
+    pub registry: String,
     pub sources: Vec<DriverSource>,
     pub version_req: Option<semver::VersionReq>,
     pub artifact_filter: Option<Vec<String>>,
     pub language: Option<String>,
 }
 
+/// Registry assumed when a driver doesn't specify one.
+pub const DEFAULT_REGISTRY: &str = "public";
+
+pub fn default_registry() -> String {
+    DEFAULT_REGISTRY.to_string()
+}
+
 impl DriverConfig {
+
     /// Check if an artifact filename matches the filter patterns.
     /// Returns true if no filter is set, or if the artifact matches any pattern.
     pub fn matches_artifact(&self, filename: &str) -> bool {
@@ -71,6 +86,9 @@ impl DriverConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseRecord {
     pub name: String,
+    /// Registry the driver is published in; (registry, name) identifies a driver.
+    #[serde(default = "default_registry")]
+    pub registry: String,
     pub release_tag: String,
     pub version: Option<String>,
     pub published_date: DateTime<Utc>,
@@ -91,6 +109,9 @@ pub struct ReleaseRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryRecord {
     pub name: String,
+    /// Registry the driver is published in; (registry, name) identifies a driver.
+    #[serde(default = "default_registry")]
+    pub registry: String,
     pub release_tag: String,
     pub version: Option<String>,
     pub published_date: DateTime<Utc>,
@@ -110,6 +131,9 @@ pub struct LibraryRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverRecord {
     pub name: String,
+    /// Registry the driver is published in; (registry, name) identifies a driver.
+    #[serde(default = "default_registry")]
+    pub registry: String,
     /// GitHub repo of the driver's first GitHub source; None for PyPI-only drivers.
     pub repo_owner: Option<String>,
     pub repo_name: Option<String>,
@@ -126,6 +150,9 @@ pub struct DriverRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyRecord {
     pub name: String,
+    /// Registry the driver is published in; (registry, name) identifies a driver.
+    #[serde(default = "default_registry")]
+    pub registry: String,
     pub release_tag: String,
     pub version: Option<String>,
     pub os: String,
@@ -143,6 +170,9 @@ pub struct DependencyRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolRecord {
     pub name: String,
+    /// Registry the driver is published in; (registry, name) identifies a driver.
+    #[serde(default = "default_registry")]
+    pub registry: String,
     pub release_tag: String,
     pub version: Option<String>,
     pub os: String,
@@ -332,7 +362,9 @@ mod tests {
     #[test]
     fn test_artifact_filter_prefix() {
         let config = DriverConfig {
+            id: "test".to_string(),
             name: "test".to_string(),
+            registry: default_registry(),
             sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
@@ -351,7 +383,9 @@ mod tests {
     #[test]
     fn test_artifact_filter_suffix() {
         let config = DriverConfig {
+            id: "test".to_string(),
             name: "test".to_string(),
+            registry: default_registry(),
             sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
@@ -370,7 +404,9 @@ mod tests {
     #[test]
     fn test_artifact_filter_contains() {
         let config = DriverConfig {
+            id: "test".to_string(),
             name: "test".to_string(),
+            registry: default_registry(),
             sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
@@ -389,7 +425,9 @@ mod tests {
     #[test]
     fn test_artifact_filter_glob() {
         let config = DriverConfig {
+            id: "test".to_string(),
             name: "test".to_string(),
+            registry: default_registry(),
             sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),
@@ -408,7 +446,9 @@ mod tests {
     #[test]
     fn test_artifact_filter_none() {
         let config = DriverConfig {
+            id: "test".to_string(),
             name: "test".to_string(),
+            registry: default_registry(),
             sources: vec![DriverSource::GitHub {
                 owner: "test".to_string(),
                 repo: "test".to_string(),

@@ -34,10 +34,12 @@ type ReleaseDataValue = (
     bool,                        // has_universal_binary
     Option<HashSet<String>>,     // universal_binary_archs (architectures from universal binaries)
 );
-type ReleaseDataMap = HashMap<(String, String), ReleaseDataValue>;
-type ReleaseDataVec = Vec<((String, String), ReleaseDataValue)>;
+/// Identifies a driver: (registry, name). Names alone aren't unique.
+type DriverKey = (String, String);
+type ReleaseDataMap = HashMap<(DriverKey, String), ReleaseDataValue>;
+type ReleaseDataVec = Vec<((DriverKey, String), ReleaseDataValue)>;
 type DriverFirstLatest = HashMap<
-    String,
+    DriverKey,
     (
         chrono::DateTime<chrono::Utc>,
         Option<String>,
@@ -145,7 +147,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
     // Filter to specific driver if requested
     if let Some(ref driver_name) = driver_filter {
-        drivers.retain(|d| d.name == *driver_name);
+        drivers.retain(|d| d.id == *driver_name);
         if drivers.is_empty() {
             return Err(error::AdbcIndexError::Config(format!(
                 "Driver '{}' not found in configuration",
@@ -244,7 +246,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
                         // Save release metadata for analyze command to use
                         let release_dir = cache_dir
-                            .join(&driver.name)
+                            .join(&driver.id)
                             .join(&source_id)
                             .join(&sanitized_tag);
                         std::fs::create_dir_all(&release_dir).ok();
@@ -276,7 +278,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
                             // Check if artifact already exists in cache with valid SHA256
                             let cache_path = cache_dir
-                                .join(&driver.name)
+                                .join(&driver.id)
                                 .join(&source_id)
                                 .join(&sanitized_tag)
                                 .join(&asset.name);
@@ -298,15 +300,15 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
                                     eprintln!("DEBUG:   Adding to download queue");
                                 }
 
-                                // Use API URL instead of browser_download_url for tags with slashes
-                                // GitHub has a bug where browser_download_url doesn't work for tags with /
-                                // The API url works: needs Accept: application/octet-stream header
-                                let (download_url, url_type) =
-                                    if tag.contains('/') && asset.url.is_some() {
-                                        (asset.url.clone().unwrap(), "API")
-                                    } else {
-                                        (asset.browser_download_url.clone(), "direct")
-                                    };
+                                // Prefer the API asset URL (sent with Accept: application/octet-stream
+                                // and the GitHub token). It works for private repos the token can
+                                // access (e.g. adbc-drivers/db2), whose browser_download_url 404s
+                                // without auth, and for tags with '/', where browser_download_url
+                                // is broken.
+                                let (download_url, url_type) = match &asset.url {
+                                    Some(api_url) => (api_url.clone(), "API"),
+                                    None => (asset.browser_download_url.clone(), "direct"),
+                                };
 
                                 if std::env::var("DEBUG").is_ok() {
                                     eprintln!("DEBUG:   URL type: {} for {}", url_type, asset.name);
@@ -314,7 +316,7 @@ async fn download(driver_filter: Option<String>) -> Result<()> {
 
                                 download_tasks.push(download::DownloadTask {
                                     url: download_url,
-                                    driver_name: driver.name.clone(),
+                                    driver_name: driver.id.clone(),
                                     source_id: source_id.clone(),
                                     release_tag: tag.clone(),
                                     artifact_name: asset.name.clone(),
@@ -482,13 +484,12 @@ async fn analyze() -> Result<()> {
     let mut symbol_records = Vec::new();
     let mut dependency_records = Vec::new();
     let mut release_data: ReleaseDataMap = HashMap::new();
-    let mut driver_stats: HashMap<String, (Option<String>, Option<String>, usize)> = HashMap::new();
+    let mut driver_stats: HashMap<DriverKey, (Option<String>, Option<String>, usize)> =
+        HashMap::new();
 
     while let Some(task_result) = tasks.next().await {
         match task_result {
             Ok(Ok(result)) => {
-                let _driver_name = result.driver_name.clone();
-
                 // Merge results
                 library_records.extend(result.library_records);
                 symbol_records.extend(result.symbol_records);
@@ -501,7 +502,7 @@ async fn analyze() -> Result<()> {
 
                 // Store driver stats
                 driver_stats.insert(
-                    result.driver_name,
+                    result.driver_key,
                     (result.repo_owner, result.repo_name, result.library_count),
                 );
 
@@ -551,7 +552,7 @@ async fn analyze() -> Result<()> {
     }
 
     // Determine the latest release_tag per driver (by published_date)
-    let mut latest_tag_per_driver: HashMap<String, (String, chrono::DateTime<chrono::Utc>)> =
+    let mut latest_tag_per_driver: HashMap<DriverKey, (String, chrono::DateTime<chrono::Utc>)> =
         HashMap::new();
     for ((name, tag), (_, published_date, _, _, _, _, _)) in &release_data {
         latest_tag_per_driver
@@ -564,7 +565,7 @@ async fn analyze() -> Result<()> {
             })
             .or_insert((tag.clone(), *published_date));
     }
-    let latest_tag_per_driver: HashMap<String, String> = latest_tag_per_driver
+    let latest_tag_per_driver: HashMap<DriverKey, String> = latest_tag_per_driver
         .into_iter()
         .map(|(name, (tag, _))| (name, tag))
         .collect();
@@ -572,29 +573,29 @@ async fn analyze() -> Result<()> {
     // Stamp is_latest on library, symbol, and dependency records
     for record in &mut library_records {
         record.is_latest = latest_tag_per_driver
-            .get(&record.name)
+            .get(&(record.registry.clone(), record.name.clone()))
             .map(|t| t == &record.release_tag)
             .unwrap_or(false);
     }
     for record in &mut symbol_records {
         record.is_latest = latest_tag_per_driver
-            .get(&record.name)
+            .get(&(record.registry.clone(), record.name.clone()))
             .map(|t| t == &record.release_tag)
             .unwrap_or(false);
     }
     for record in &mut dependency_records {
         record.is_latest = latest_tag_per_driver
-            .get(&record.name)
+            .get(&(record.registry.clone(), record.name.clone()))
             .map(|t| t == &record.release_tag)
             .unwrap_or(false);
     }
 
     // Aggregate languages from library records to determine primary language for each driver
-    let mut driver_languages: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    let mut driver_languages: HashMap<DriverKey, HashMap<String, usize>> = HashMap::new();
     for lib in &library_records {
         if let Some(ref lang) = lib.language {
             driver_languages
-                .entry(lib.name.clone())
+                .entry((lib.registry.clone(), lib.name.clone()))
                 .or_insert_with(HashMap::new)
                 .entry(lang.clone())
                 .and_modify(|count| *count += 1)
@@ -603,7 +604,7 @@ async fn analyze() -> Result<()> {
     }
 
     // Determine primary language (most common) for each driver
-    let primary_languages: HashMap<String, String> = driver_languages
+    let primary_languages: HashMap<DriverKey, String> = driver_languages
         .into_iter()
         .map(|(driver, lang_counts)| {
             let primary = lang_counts
@@ -618,11 +619,11 @@ async fn analyze() -> Result<()> {
     // Create driver records
     let mut driver_records: Vec<DriverRecord> = driver_stats
         .iter()
-        .map(|(name, (owner, repo, lib_count))| {
+        .map(|(key, (owner, repo, lib_count))| {
             // Count releases for this driver
             let release_count = release_data
                 .keys()
-                .filter(|(driver_name, _)| driver_name == name)
+                .filter(|(driver_key, _)| driver_key == key)
                 .count() as i64;
 
             // Get first and latest release info
@@ -631,13 +632,14 @@ async fn analyze() -> Result<()> {
                 first_release_version,
                 latest_release_date,
                 latest_release_version,
-            ) = driver_first_latest.get(name).cloned().unwrap_or_else(|| {
+            ) = driver_first_latest.get(key).cloned().unwrap_or_else(|| {
                 let now = chrono::Utc::now();
                 (now, None, now, None)
             });
 
             DriverRecord {
-                name: name.clone(),
+                registry: key.0.clone(),
+                name: key.1.clone(),
                 repo_owner: owner.clone(),
                 repo_name: repo.clone(),
                 release_count,
@@ -646,19 +648,19 @@ async fn analyze() -> Result<()> {
                 first_release_version,
                 latest_release_date,
                 latest_release_version,
-                language: primary_languages.get(name).cloned(),
+                language: primary_languages.get(key).cloned(),
             }
         })
         .collect();
 
-    // Sort by name
-    driver_records.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by name, then registry
+    driver_records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.registry.cmp(&b.registry)));
 
     // Convert release_data to ReleaseRecords
     let mut release_records: Vec<models::ReleaseRecord> = release_data
         .into_iter()
         .map(
-            |((name, release_tag), (version, published_date, release_url, os_set, arch_set, has_universal_binary, universal_binary_archs_opt))| {
+            |((key, release_tag), (version, published_date, release_url, os_set, arch_set, has_universal_binary, universal_binary_archs_opt))| {
                 let mut os: Vec<String> = os_set.into_iter().collect();
                 let mut arch: Vec<String> = arch_set.into_iter().collect();
                 os.sort();
@@ -678,7 +680,8 @@ async fn analyze() -> Result<()> {
                     .unwrap_or(false);
 
                 models::ReleaseRecord {
-                    name: name.clone(),
+                    registry: key.0.clone(),
+                    name: key.1.clone(),
                     release_tag: release_tag.clone(),
                     version,
                     published_date,
@@ -688,7 +691,7 @@ async fn analyze() -> Result<()> {
                     has_universal_binary,
                     universal_binary_archs,
                     is_latest: latest_tag_per_driver
-                        .get(&name)
+                        .get(&key)
                         .map(|t| t == &release_tag)
                         .unwrap_or(false),
                     is_prerelease,
@@ -701,6 +704,7 @@ async fn analyze() -> Result<()> {
     release_records.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
+            .then_with(|| a.registry.cmp(&b.registry))
             .then_with(|| a.release_tag.cmp(&b.release_tag))
     });
 
@@ -709,9 +713,9 @@ async fn analyze() -> Result<()> {
     std::fs::create_dir_all(&dist_dir)?;
 
     // Collect driver names for validation before moving driver_records
-    let actual_driver_names: HashSet<String> = driver_records
+    let actual_driver_keys: HashSet<DriverKey> = driver_records
         .iter()
-        .map(|d| d.name.clone())
+        .map(|d| (d.registry.clone(), d.name.clone()))
         .collect();
 
     let write_progress = progress::ProgressTracker::new(5, "Write");
@@ -767,15 +771,16 @@ async fn analyze() -> Result<()> {
     // Validate that all drivers from config are present in output
     println!("\n🔍 Validating output...");
     let config_drivers = config::load_config(&config)?.drivers;
-    let expected_drivers: HashSet<String> = config_drivers
+    let expected_drivers: HashSet<DriverKey> = config_drivers
         .iter()
-        .map(|d| d.name.clone())
+        .map(|d| (d.registry.clone(), d.name.clone()))
         .collect();
 
-    let missing_drivers: Vec<String> = expected_drivers
-        .difference(&actual_driver_names)
-        .cloned()
+    let mut missing_drivers: Vec<String> = expected_drivers
+        .difference(&actual_driver_keys)
+        .map(|(registry, name)| format!("{name} (registry: {registry})"))
         .collect();
+    missing_drivers.sort();
 
     if !missing_drivers.is_empty() {
         eprintln!("\n⚠️  Warning: The following drivers from drivers.toml are missing from the output:");
@@ -803,7 +808,7 @@ struct DriverProcessResult {
     symbol_records: Vec<models::SymbolRecord>,
     dependency_records: Vec<models::DependencyRecord>,
     release_data: ReleaseDataVec,
-    driver_name: String,
+    driver_key: DriverKey,
     repo_owner: Option<String>,
     repo_name: Option<String>,
     library_count: usize,
@@ -814,6 +819,7 @@ struct DriverProcessResult {
 fn read_releases_from_cache(
     cache_dir: &Path,
     driver_name: &str,
+    source_ids: &HashSet<String>,
 ) -> Result<Vec<github::types::Release>> {
     use std::collections::HashMap;
     use std::fs;
@@ -861,7 +867,13 @@ fn read_releases_from_cache(
             // Old-style: this IS a version/tag directory
             tag_dirs.push(top_path);
         } else {
-            // New-style: this is a source directory containing version subdirectories
+            // New-style: this is a source directory containing version subdirectories.
+            // Only read sources still configured for this driver, so a removed
+            // or moved URL's leftover cache doesn't leak into the results.
+            let source_id = top_entry.file_name().to_string_lossy().to_string();
+            if !source_ids.contains(&source_id) {
+                continue;
+            }
             let sub_entries = fs::read_dir(&top_path)?;
             for sub_entry in sub_entries {
                 let sub_entry = sub_entry?;
@@ -995,7 +1007,8 @@ async fn process_driver(
 
     // Read releases from cache instead of fetching from API
     // This allows analyze to work offline without GitHub/PyPI access
-    let mut releases = read_releases_from_cache(&cache_dir, &driver.name)?;
+    let source_ids: HashSet<String> = driver.sources.iter().map(|s| s.source_id()).collect();
+    let mut releases = read_releases_from_cache(&cache_dir, &driver.id, &source_ids)?;
 
     // Filter releases by version requirement if specified
     if let Some(ref version_req) = driver.version_req {
@@ -1037,13 +1050,31 @@ async fn process_driver(
             // Locate the artifact in the cache directory so we can read the
             // sidecar files (.sha256, .analysis.json) without extracting.
             let artifact_path =
-                find_artifact_path(&cache_dir, &driver.name, &tag, &asset.name);
+                find_artifact_path(&cache_dir, &driver.id, &tag, &asset.name);
+
+            let configured_language = driver.language.clone();
 
             if let Some(ref apath) = artifact_path {
-                if let Some(cached) = load_analysis_cache(apath) {
+                if let Some(mut cached) = load_analysis_cache(apath) {
                     // Cache hit: push the pre-computed records and skip all
                     // extraction / parsing work.
-                    if let Some(lib_rec) = cached.library_record {
+                    if let Some(mut lib_rec) = cached.library_record {
+                        // The config may have changed since the sidecar was
+                        // written (and older sidecars lack `registry`), so
+                        // re-stamp identity and any configured language.
+                        lib_rec.name = driver.name.clone();
+                        lib_rec.registry = driver.registry.clone();
+                        if configured_language.is_some() {
+                            lib_rec.language = configured_language.clone();
+                        }
+                        for r in &mut cached.symbol_records {
+                            r.name = driver.name.clone();
+                            r.registry = driver.registry.clone();
+                        }
+                        for r in &mut cached.dependency_records {
+                            r.name = driver.name.clone();
+                            r.registry = driver.registry.clone();
+                        }
                         let os = lib_rec.os.clone();
                         let arch = lib_rec.arch.clone();
                         let is_universal = arch.len() > 1;
@@ -1054,7 +1085,7 @@ async fn process_driver(
                         library_count += 1;
 
                         // Aggregate release data (identical logic to the miss path below)
-                        let key = (driver.name.clone(), tag.clone());
+                        let key = ((driver.registry.clone(), driver.name.clone()), tag.clone());
                         if let Some(entry) = release_data_vec.iter_mut().find(|(k, _)| k == &key) {
                             entry.1 .3.insert(os.clone());
                             for av in arch.iter() { entry.1 .4.insert(av.clone()); }
@@ -1093,7 +1124,7 @@ async fn process_driver(
 
             // Extract archive and find shared library
             let library_info =
-                extract_and_find_library(&cache_dir, &driver.name, &tag, &asset.name);
+                extract_and_find_library(&cache_dir, &driver.id, &tag, &asset.name);
 
             // Only process if we found a library
             if let Some(lib_info) = library_info {
@@ -1112,6 +1143,7 @@ async fn process_driver(
                     // Add to library records (language will be added later)
                     library_records.push(LibraryRecord {
                         name: driver.name.clone(),
+                        registry: driver.registry.clone(),
                         release_tag: tag.clone(),
                         version: version.clone(),
                         published_date,
@@ -1129,8 +1161,8 @@ async fn process_driver(
                     // Extract symbols and analyze stubs in a single pass
                     if let Some(ref lib_path) = lib_info.path {
                         // Use explicit language from config if provided, otherwise detect
-                        let language = if let Some(ref explicit_lang) = driver.language {
-                            Some(explicit_lang.clone())
+                        let language = if configured_language.is_some() {
+                            configured_language.clone()
                         } else {
                             // Detect language from binary strings (works for stripped binaries)
                             // This extracts printable strings from the binary's data sections
@@ -1160,6 +1192,7 @@ async fn process_driver(
 
                                     symbol_records.push(SymbolRecord {
                                         name: driver.name.clone(),
+                                        registry: driver.registry.clone(),
                                         release_tag: tag.clone(),
                                         version: version.clone(),
                                         os: os.clone(),
@@ -1187,6 +1220,7 @@ async fn process_driver(
                                 for (idx, dep) in deps.iter().enumerate() {
                                     dependency_records.push(DependencyRecord {
                                         name: driver.name.clone(),
+                                        registry: driver.registry.clone(),
                                         release_tag: tag.clone(),
                                         version: version.clone(),
                                         os: os.clone(),
@@ -1233,7 +1267,7 @@ async fn process_driver(
                     }
 
                     // Aggregate release data
-                    let key = (driver.name.clone(), tag.clone());
+                    let key = ((driver.registry.clone(), driver.name.clone()), tag.clone());
 
                     // Determine if this is a universal binary (multiple architectures in a single library)
                     let is_universal = arch.len() > 1;
@@ -1291,8 +1325,6 @@ async fn process_driver(
         }
     }
 
-    // Extract repo owner and name from first source
-    // For multi-source drivers, we use the first source for display purposes
     // The driver's GitHub repo: the first GitHub source, regardless of where it
     // appears in `urls` (e.g. bigquery lists PyPI first). PyPI-only drivers
     // have no repo, so these are None rather than a made-up owner.
@@ -1316,7 +1348,7 @@ async fn process_driver(
         symbol_records,
         dependency_records,
         release_data: release_data_vec,
-        driver_name: driver.name,
+        driver_key: (driver.registry, driver.name),
         repo_owner,
         repo_name,
         library_count,
@@ -1597,11 +1629,29 @@ fn is_driver_artifact(file_format: &Option<String>) -> bool {
 async fn html() -> Result<()> {
     use std::process::Command;
 
+    // A driver is identified by (registry, name), so charts label each driver
+    // uniquely: the bare name for the public registry, "name (registry)"
+    // otherwise. Every parquet read in the chart queries goes through a view
+    // whose `name` column holds that label.
+    fn with_driver_labels(sql: &str) -> String {
+        let mut sql = sql.to_string();
+        for table in ["drivers", "releases", "libraries", "symbols", "dependencies"] {
+            let read = format!("read_parquet('dist/{table}.parquet')");
+            let labeled = format!(
+                "(SELECT * REPLACE (CASE WHEN registry = '{}' THEN name \
+                 ELSE name || ' (' || registry || ')' END AS name) FROM {read})",
+                models::DEFAULT_REGISTRY
+            );
+            sql = sql.replace(&read, &labeled);
+        }
+        sql
+    }
+
     fn query_duckdb(sql: &str) -> Result<String> {
         let output = Command::new("duckdb")
             .arg("-csv")
             .arg("-c")
-            .arg(sql)
+            .arg(with_driver_labels(sql))
             .output()?;
 
         if !output.status.success() {

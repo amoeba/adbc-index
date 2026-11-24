@@ -5,6 +5,7 @@ use std::sync::Arc;
 /// Data for building a dependencies batch
 pub struct DependenciesBatchData {
     pub names: Vec<String>,
+    pub registries: Vec<String>,
     pub release_tags: Vec<String>,
     pub versions: Vec<Option<String>>,
     pub os_vec: Vec<String>,
@@ -20,6 +21,7 @@ pub struct DependenciesBatchData {
 pub fn dependencies_schema() -> Schema {
     Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
+        Field::new("registry", DataType::Utf8, false),
         Field::new("release_tag", DataType::Utf8, false),
         Field::new("version", DataType::Utf8, true),
         Field::new("os", DataType::Utf8, false),
@@ -51,6 +53,7 @@ pub fn build_dependencies_batch(data: DependenciesBatchData) -> Vec<ArrayRef> {
 
     vec![
         Arc::new(StringArray::from(data.names)) as ArrayRef,
+        Arc::new(StringArray::from(data.registries)) as ArrayRef,
         Arc::new(StringArray::from(data.release_tags)) as ArrayRef,
         Arc::new(StringArray::from(data.versions)) as ArrayRef,
         Arc::new(StringArray::from(data.os_vec)) as ArrayRef,

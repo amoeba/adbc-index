@@ -1,5 +1,6 @@
 use crate::error::{AdbcIndexError, Result};
-use crate::models::{DriverConfig, DriverSource};
+use crate::models::{DriverConfig, DriverSource, DEFAULT_REGISTRY};
+use std::collections::HashSet;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -31,6 +32,12 @@ impl StringOrVec {
 #[derive(Deserialize)]
 struct DetailedDriverConfig {
     urls: Vec<String>,
+    /// Registry driver name; defaults to the table key.
+    #[serde(default)]
+    name: Option<String>,
+    /// Registry the driver is published in; defaults to "public".
+    #[serde(default)]
+    registry: Option<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
@@ -56,9 +63,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
     let mut configs = Vec::new();
 
-    for (name, driver_value) in config.drivers {
-        let (urls, version_req, artifact_filter, language) = match driver_value {
-            DriverValue::Simple(url) => (vec![url], None, None, None),
+    for (id, driver_value) in config.drivers {
+        let name = id.as_str();
+        let (urls, version_req, artifact_filter, language, driver_name, registry) = match driver_value {
+            DriverValue::Simple(url) => (vec![url], None, None, None, None, None),
             DriverValue::Detailed(detailed) => {
                 let version_req = if let Some(version_str) = &detailed.version {
                     Some(semver::VersionReq::parse(version_str).map_err(|e| {
@@ -83,6 +91,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
                     version_req,
                     detailed.artifact_filter.map(|f| f.into_vec()),
                     detailed.language,
+                    detailed.name,
+                    detailed.registry,
                 )
             }
         };
@@ -90,17 +100,33 @@ pub fn load_config(path: &Path) -> Result<Config> {
         // Parse all URLs into sources
         let mut sources = Vec::new();
         for url in urls {
-            let source = parse_driver_url(&url)?;
-            sources.push(source);
+            sources.push(parse_driver_url(&url)?);
         }
 
+        let driver_name = driver_name.unwrap_or_else(|| id.clone());
+        let registry = registry.unwrap_or_else(|| DEFAULT_REGISTRY.to_string());
+
         configs.push(DriverConfig {
-            name,
+            id,
+            name: driver_name,
+            registry,
             sources,
             version_req,
             artifact_filter,
             language,
         });
+    }
+
+    // A driver is identified by (registry, name); two entries can share a
+    // name only if they're in different registries.
+    let mut seen = HashSet::new();
+    for d in &configs {
+        if !seen.insert((d.registry.as_str(), d.name.as_str())) {
+            return Err(AdbcIndexError::Config(format!(
+                "Duplicate driver '{}' in registry '{}' (entry '{}')",
+                d.name, d.registry, d.id
+            )));
+        }
     }
 
     Ok(Config {
@@ -343,5 +369,59 @@ urls = []
         assert!(parse_github_url("https://github.com/owner").is_err());
         assert!(parse_pypi_url("https://pypi.org/simple/package/").is_err());
         assert!(parse_driver_url("https://example.com/package").is_err());
+    }
+
+    #[test]
+    fn test_registry_and_name() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[drivers]
+mysql = "https://github.com/adbc-drivers/mysql"
+
+[drivers.oracle]
+urls = ["https://github.com/adbc-drivers/oracle"]
+
+[drivers.oracle-private]
+name = "oracle"
+registry = "private"
+urls = ["https://github.com/adbc-drivers/oracle-legacy"]
+"#
+        )
+        .unwrap();
+        let mut drivers = load_config(file.path()).unwrap().drivers;
+        drivers.sort_by(|a, b| a.id.cmp(&b.id));
+        let got: Vec<_> = drivers
+            .iter()
+            .map(|d| (d.id.as_str(), d.registry.as_str(), d.name.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("mysql", "public", "mysql"),
+                ("oracle", "public", "oracle"),
+                ("oracle-private", "private", "oracle"),
+            ]
+        );
+
+        // Same name in the same registry is rejected
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[drivers.oracle]
+urls = ["https://github.com/adbc-drivers/oracle"]
+
+[drivers.oracle2]
+name = "oracle"
+urls = ["https://github.com/adbc-drivers/oracle-legacy"]
+"#
+        )
+        .unwrap();
+        assert!(load_config(file.path()).is_err());
     }
 }

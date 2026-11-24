@@ -60,6 +60,8 @@ impl LibrariesWriter {
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
         let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
+        let registries: StringArray =
+            self.buffer.iter().map(|r| Some(r.registry.as_str())).collect();
 
         let release_tags: StringArray = self
             .buffer
@@ -127,6 +129,7 @@ impl LibrariesWriter {
 
         let columns: Vec<ArrayRef> = vec![
             Arc::new(names),
+            Arc::new(registries),
             Arc::new(release_tags),
             Arc::new(versions),
             Arc::new(published_dates),
