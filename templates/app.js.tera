@@ -192,18 +192,21 @@ const quickFiltersInitialized = new Set();
 const QUICK_FILTERS = {
   drivers: [
     { type: 'multi',  label: 'Language', col: 'language', colType: 'scalar' },
+    { type: 'multi',  label: 'Registry', col: 'registry', colType: 'scalar' },
   ],
   releases: [
     { type: 'toggle', label: 'Latest',          col: 'is_latest',            val: true },
     { type: 'toggle', label: 'Universal Binary', col: 'has_universal_binary', val: true },
     { type: 'multi',  label: 'Platform', col: 'os',   colType: 'list' },
     { type: 'multi',  label: 'Arch',     col: 'arch', colType: 'list' },
+    { type: 'multi',  label: 'Registry', col: 'registry', colType: 'scalar' },
   ],
   libraries: [
     { type: 'toggle', label: 'Latest',   col: 'is_latest', val: true },
     { type: 'multi',  label: 'Platform', col: 'os',        colType: 'scalar' },
     { type: 'multi',  label: 'Arch',     col: 'arch',      colType: 'list'   },
     { type: 'multi',  label: 'Language', col: 'language',  colType: 'scalar' },
+    { type: 'multi',  label: 'Registry', col: 'registry', colType: 'scalar' },
   ],
   symbols: [
     { type: 'toggle', label: 'Latest',   col: 'is_latest', val: true },
@@ -211,6 +214,7 @@ const QUICK_FILTERS = {
     { type: 'multi',  label: 'Arch',     col: 'arch',      colType: 'list'   },
     { type: 'multi',  label: 'Stub',     col: 'is_stub',   colType: 'scalar',
       options: [{ label: 'Stubs', val: true }, { label: 'Non-Stubs', val: false }] },
+    { type: 'multi',  label: 'Registry', col: 'registry', colType: 'scalar' },
   ],
   dependencies: [
     { type: 'toggle', label: 'Latest',     col: 'is_latest',  val: true },
@@ -218,6 +222,7 @@ const QUICK_FILTERS = {
     { type: 'multi',  label: 'Arch',       col: 'arch',       colType: 'list'   },
     { type: 'multi',  label: 'System Dep', col: 'is_system',  colType: 'scalar',
       options: [{ label: 'System', val: true }, { label: 'Non-System', val: false }] },
+    { type: 'multi',  label: 'Registry', col: 'registry', colType: 'scalar' },
   ],
 };
 
