@@ -32,9 +32,14 @@ Use `dbc search --json --pre` to get the authoritative list of drivers. Compare 
 
 ### Registry coverage
 
-All 25 drivers from `dbc search --json --pre` are covered in `drivers.toml`
-after adding `firebolt`. The public CDN index lists 22 drivers; the other three
-(`oracle`, `sap-hana`, `teradata`) use the private registry.
+All 27 drivers from `dbc search --json --pre` are covered in `drivers.toml`
+after adding `mariadb` and `motherduck` (2026-11-17). 24 are in the public
+registry; the other three (`oracle`, `sap-hana`, `teradata`) use the private
+registry.
+
+- `mariadb` — `adbc-drivers/mariadb`, Go, tags are `go/vX.Y.Z`.
+- `motherduck` — `adbc-drivers/motherduck`, C++, only `v0.1.0-alpha.1`
+  (pre-release) at time of adding.
 
 ### Firebolt findings
 

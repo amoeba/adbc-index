@@ -41,6 +41,14 @@ language = "c++"
 urls = ["https://pypi.org/project/adbc-driver-flightsql/"]
 language = "go"
 
+[drivers.mariadb]
+urls = ["https://github.com/adbc-drivers/mariadb"]
+language = "go"
+
+[drivers.motherduck]
+urls = ["https://github.com/adbc-drivers/motherduck"]
+language = "c++"
+
 [drivers.mssql]
 urls = ["https://github.com/adbc-drivers/microsoft"]
 language = "go"
