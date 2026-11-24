@@ -130,6 +130,14 @@ version = ">=0.8.0"
 artifact_filter = "libduckdb-*"
 ```
 
+A driver is identified by (registry, name). Optional `name` (defaults to the table key) and `registry` (defaults to `"public"`) let two entries share a name across registries; the table key must be unique and names the `cache/` directory:
+```toml
+[drivers.oracle-private]
+name = "oracle"
+registry = "private"
+urls = ["https://github.com/adbc-drivers/oracle-legacy"]
+```
+
 ## Testing
 
 Tests use the `test_artifacts/` directory for fixtures. Integration tests analyze real shared libraries to verify symbol extraction and stub detection work correctly across platforms (ELF/PE/Mach-O).

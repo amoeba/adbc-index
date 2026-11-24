@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub fn create_libraries_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
+        Field::new("registry", DataType::Utf8, false),
         Field::new("release_tag", DataType::Utf8, false),
         Field::new("version", DataType::Utf8, true),
         Field::new(

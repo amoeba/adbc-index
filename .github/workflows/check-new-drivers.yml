@@ -40,8 +40,10 @@ jobs:
         id: diff
         run: |
           # Parse drivers.toml properly so both `name = "url"` and
-          # `[drivers.name]` forms are recognized.
-          python3 -c 'import tomllib; print("\n".join(tomllib.load(open("drivers.toml", "rb"))["drivers"]))' \
+          # `[drivers.name]` forms are recognized. Use each entry's `name`
+          # field (defaulting to the table key), since entries in different
+          # registries can share a name under different keys.
+          python3 -c 'import tomllib; d = tomllib.load(open("drivers.toml", "rb"))["drivers"]; print("\n".join(v.get("name", k) if isinstance(v, dict) else k for k, v in d.items()))' \
             | sort -u > /tmp/known-drivers.txt
 
           comm -13 /tmp/known-drivers.txt /tmp/current-drivers.txt > /tmp/new-drivers.txt

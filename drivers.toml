@@ -5,6 +5,13 @@
 # 2. Detailed: [drivers.driver_name] with urls (array), version, artifact_filter, and language
 #
 # Language field is optional. If not specified, language will be auto-detected from binaries.
+#
+# A driver is identified by (registry, name), not by its table key, so two entries may
+# share a name if they're in different registries. Both fields are optional:
+#   name     - driver name in its registry (defaults to the table key)
+#   registry - registry it's published in: "public" (default) or "private"
+# The table key must be unique; it names the cache directory and is what
+# `adbc-index download <driver>` matches.
 
 [drivers.bigquery]
 urls = [
@@ -26,7 +33,10 @@ urls = ["https://github.com/adbc-drivers/datafusion"]
 language = "rust"
 
 [drivers.db2]
-urls = ["https://pypi.org/project/adbc-driver-ibm-db2/"]
+urls = [
+  "https://github.com/adbc-drivers/db2",
+  "https://pypi.org/project/adbc-driver-ibm-db2/"
+]
 language = "c++"
 
 [drivers.exasol]
@@ -84,15 +94,25 @@ language = "c++"
 urls = ["https://github.com/adbc-drivers/trino"]
 language = "go"
 
+# oracle exists in both registries: the public ADBC Driver Foundry driver
+# (Rust) and Columnar's private one (Go, repo oracle-legacy).
 [drivers.oracle]
+urls = ["https://github.com/adbc-drivers/oracle"]
+language = "rust"
+
+[drivers.oracle-private]
+name = "oracle"
+registry = "private"
 urls = ["https://github.com/adbc-drivers/oracle-legacy"]
 language = "go"
 
 [drivers.teradata]
+registry = "private"
 urls = ["https://github.com/adbc-drivers/teradata"]
 language = "rust"
 
 [drivers.sap-hana]
+registry = "private"
 urls = ["https://github.com/adbc-drivers/sap-hana"]
 language = "go"
 

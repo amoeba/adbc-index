@@ -47,6 +47,7 @@ impl SymbolsWriter {
         }
 
         let mut names = Vec::new();
+        let mut registries = Vec::new();
         let mut release_tags = Vec::new();
         let mut versions = Vec::new();
         let mut os_vec = Vec::new();
@@ -61,6 +62,7 @@ impl SymbolsWriter {
 
         for record in &self.batch {
             names.push(record.name.clone());
+            registries.push(record.registry.clone());
             release_tags.push(record.release_tag.clone());
             versions.push(record.version.clone());
             os_vec.push(record.os.clone());
@@ -76,6 +78,7 @@ impl SymbolsWriter {
 
         let arrays = build_symbols_batch(SymbolsBatchData {
             names,
+            registries,
             release_tags,
             versions,
             os_vec,

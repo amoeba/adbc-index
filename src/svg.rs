@@ -275,7 +275,7 @@ pub fn generate_bar_chart(csv: &str, title: &str, item_attr: &str) -> String {
     let width = 500.0;
     let bar_height = 20.0;
     let bar_spacing = 5.0;
-    let margin_left = 100.0;
+    let margin_left = label_margin(data.iter().map(|d| d.0.as_str()));
     let margin_right = 80.0;
     let margin_top = 30.0;
     let margin_bottom = 10.0;
@@ -404,7 +404,7 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
     let width = 500.0;
     let box_height = 20.0;
     let box_spacing = 5.0;
-    let margin_left = 100.0;
+    let margin_left = label_margin(data.iter().map(|d| d.0.as_str()));
     let margin_right = 80.0;
     let margin_top = 60.0;  // Increased for legend
     let margin_bottom = 30.0;
@@ -623,4 +623,12 @@ pub fn generate_box_plot(csv: &str, title: &str) -> String {
 
     svg.push_str("</svg>\n");
     svg
+}
+
+/// Left margin wide enough for the longest row label (10px monospace, ~6.1px
+/// per char, plus the 8px gap before the plot). At least the old 100px.
+/// Labels like "sap-hana (private)" overflow a fixed 100px.
+fn label_margin<'a>(labels: impl Iterator<Item = &'a str>) -> f64 {
+    let longest = labels.map(|l| l.chars().count()).max().unwrap_or(0) as f64;
+    (longest * 6.1 + 14.0).max(100.0)
 }
