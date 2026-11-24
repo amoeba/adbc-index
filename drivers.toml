@@ -25,6 +25,10 @@ language = "go"
 urls = ["https://github.com/adbc-drivers/datafusion"]
 language = "rust"
 
+[drivers.db2]
+urls = ["https://pypi.org/project/adbc-driver-ibm-db2/"]
+language = "c++"
+
 [drivers.exasol]
 urls = ["https://github.com/adbc-drivers/exasol"]
 language = "rust"
