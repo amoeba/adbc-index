@@ -4,6 +4,7 @@ use std::sync::Arc;
 /// Create the Arrow schema for driver records (one row per driver)
 pub fn create_drivers_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
+        Field::new("driver", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("registry", DataType::Utf8, false),
         Field::new("repo_owner", DataType::Utf8, false),

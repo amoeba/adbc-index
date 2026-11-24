@@ -1628,18 +1628,14 @@ async fn html() -> Result<()> {
     use std::process::Command;
 
     // A driver is identified by (registry, name), so charts label each driver
-    // uniquely: the bare name for the public registry, "name (registry)"
-    // otherwise. Every parquet read in the chart queries goes through a view
+    // by the parquet `driver` column (see models::driver_label), which is
+    // unique. Every parquet read in the chart queries goes through a view
     // whose `name` column holds that label.
     fn with_driver_labels(sql: &str) -> String {
         let mut sql = sql.to_string();
         for table in ["drivers", "releases", "libraries", "symbols", "dependencies"] {
             let read = format!("read_parquet('dist/{table}.parquet')");
-            let labeled = format!(
-                "(SELECT * REPLACE (CASE WHEN registry = '{}' THEN name \
-                 ELSE name || ' (' || registry || ')' END AS name) FROM {read})",
-                models::DEFAULT_REGISTRY
-            );
+            let labeled = format!("(SELECT * REPLACE (driver AS name) FROM {read})");
             sql = sql.replace(&read, &labeled);
         }
         sql

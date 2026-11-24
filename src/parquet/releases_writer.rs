@@ -59,6 +59,11 @@ impl ReleasesWriter {
     }
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
+        let drivers: StringArray = self
+            .buffer
+            .iter()
+            .map(|r| Some(crate::models::driver_label(&r.registry, &r.name)))
+            .collect();
         let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
         let registries: StringArray =
             self.buffer.iter().map(|r| Some(r.registry.as_str())).collect();
@@ -132,6 +137,7 @@ impl ReleasesWriter {
         let universal_binary_archs = universal_archs_builder.finish();
 
         let columns: Vec<ArrayRef> = vec![
+            Arc::new(drivers),
             Arc::new(names),
             Arc::new(registries),
             Arc::new(release_tags),

@@ -43,8 +43,9 @@ and once with `registry: "private"`. Mirror that in `drivers.toml` with the
 optional `name` and `registry` fields (defaults: the table key, and
 `"public"`); the table key just needs to be unique and is the cache directory
 name and the `download <driver>` filter. `oracle-private`, `sap-hana`, and
-`teradata` are `registry = "private"`. All parquet files carry a `registry`
-column, and dashboard charts label non-public drivers `name (registry)`.
+`teradata` are `registry = "private"`. All parquet files carry `registry`
+and a unique `driver` label column (`name` for public, `name (registry)`
+otherwise; `models::driver_label`), which dashboard charts use as labels.
 
 Private GitHub repos (`db2`, `oracle-legacy`, `sap-hana`, `teradata`) work
 because downloads go through the API asset URL with `GITHUB_TOKEN`; the token

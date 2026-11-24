@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 /// Data for building a symbols batch
 pub struct SymbolsBatchData {
+    pub drivers: Vec<String>,
     pub names: Vec<String>,
     pub registries: Vec<String>,
     pub release_tags: Vec<String>,
@@ -21,6 +22,7 @@ pub struct SymbolsBatchData {
 
 pub fn symbols_schema() -> Schema {
     Schema::new(vec![
+        Field::new("driver", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("registry", DataType::Utf8, false),
         Field::new("release_tag", DataType::Utf8, false),
@@ -54,6 +56,7 @@ pub fn build_symbols_batch(data: SymbolsBatchData) -> Vec<ArrayRef> {
     let arch_array = arch_builder.finish();
 
     vec![
+        Arc::new(StringArray::from(data.drivers)) as ArrayRef,
         Arc::new(StringArray::from(data.names)) as ArrayRef,
         Arc::new(StringArray::from(data.registries)) as ArrayRef,
         Arc::new(StringArray::from(data.release_tags)) as ArrayRef,
