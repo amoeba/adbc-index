@@ -66,13 +66,13 @@ impl DriversWriter {
         let repo_owners: StringArray = self
             .buffer
             .iter()
-            .map(|r| Some(r.repo_owner.as_str()))
+            .map(|r| r.repo_owner.as_deref())
             .collect();
 
         let repo_names: StringArray = self
             .buffer
             .iter()
-            .map(|r| Some(r.repo_name.as_str()))
+            .map(|r| r.repo_name.as_deref())
             .collect();
 
         let release_counts: Int64Array =
