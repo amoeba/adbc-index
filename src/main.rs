@@ -482,7 +482,7 @@ async fn analyze() -> Result<()> {
     let mut symbol_records = Vec::new();
     let mut dependency_records = Vec::new();
     let mut release_data: ReleaseDataMap = HashMap::new();
-    let mut driver_stats: HashMap<String, (String, String, usize)> = HashMap::new();
+    let mut driver_stats: HashMap<String, (Option<String>, Option<String>, usize)> = HashMap::new();
 
     while let Some(task_result) = tasks.next().await {
         match task_result {
@@ -804,8 +804,8 @@ struct DriverProcessResult {
     dependency_records: Vec<models::DependencyRecord>,
     release_data: ReleaseDataVec,
     driver_name: String,
-    repo_owner: String,
-    repo_name: String,
+    repo_owner: Option<String>,
+    repo_name: Option<String>,
     library_count: usize,
 }
 
@@ -1293,14 +1293,17 @@ async fn process_driver(
 
     // Extract repo owner and name from first source
     // For multi-source drivers, we use the first source for display purposes
-    let (repo_owner, repo_name) = if let Some(first_source) = driver.sources.first() {
-        match first_source {
-            models::DriverSource::GitHub { owner, repo } => (owner.clone(), repo.clone()),
-            models::DriverSource::PyPI { package } => ("pypi".to_string(), package.clone()),
-        }
-    } else {
-        ("unknown".to_string(), "unknown".to_string())
-    };
+    // The driver's GitHub repo: the first GitHub source, regardless of where it
+    // appears in `urls` (e.g. bigquery lists PyPI first). PyPI-only drivers
+    // have no repo, so these are None rather than a made-up owner.
+    let (repo_owner, repo_name) = driver
+        .sources
+        .iter()
+        .find_map(|source| match source {
+            models::DriverSource::GitHub { owner, repo } => Some((owner.clone(), repo.clone())),
+            models::DriverSource::PyPI { .. } => None,
+        })
+        .unzip();
 
     driver_spinner.finish_with_message(format!(
         "{} libraries, {} symbols",

@@ -110,8 +110,9 @@ pub struct LibraryRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverRecord {
     pub name: String,
-    pub repo_owner: String,
-    pub repo_name: String,
+    /// GitHub repo of the driver's first GitHub source; None for PyPI-only drivers.
+    pub repo_owner: Option<String>,
+    pub repo_name: Option<String>,
     pub release_count: i64,
     pub library_count: i64,
     pub first_release_date: DateTime<Utc>,
