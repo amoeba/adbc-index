@@ -59,6 +59,11 @@ impl DriversWriter {
     }
 
     fn create_record_batch(&self) -> Result<RecordBatch> {
+        let drivers: StringArray = self
+            .buffer
+            .iter()
+            .map(|r| Some(crate::models::driver_label(&r.registry, &r.name)))
+            .collect();
         let names: StringArray = self.buffer.iter().map(|r| Some(r.name.as_str())).collect();
         let registries: StringArray =
             self.buffer.iter().map(|r| Some(r.registry.as_str())).collect();
@@ -116,6 +121,7 @@ impl DriversWriter {
             .collect();
 
         let columns: Vec<ArrayRef> = vec![
+            Arc::new(drivers),
             Arc::new(names),
             Arc::new(registries),
             Arc::new(repo_owners),

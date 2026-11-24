@@ -46,6 +46,7 @@ impl DependenciesWriter {
             return Ok(());
         }
 
+        let mut drivers = Vec::new();
         let mut names = Vec::new();
         let mut registries = Vec::new();
         let mut release_tags = Vec::new();
@@ -60,6 +61,7 @@ impl DependenciesWriter {
         let mut is_latests = Vec::new();
 
         for record in &self.batch {
+            drivers.push(crate::models::driver_label(&record.registry, &record.name));
             names.push(record.name.clone());
             registries.push(record.registry.clone());
             release_tags.push(record.release_tag.clone());
@@ -75,6 +77,7 @@ impl DependenciesWriter {
         }
 
         let arrays = build_dependencies_batch(DependenciesBatchData {
+            drivers,
             names,
             registries,
             release_tags,

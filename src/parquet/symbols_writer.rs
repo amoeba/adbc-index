@@ -46,6 +46,7 @@ impl SymbolsWriter {
             return Ok(());
         }
 
+        let mut drivers = Vec::new();
         let mut names = Vec::new();
         let mut registries = Vec::new();
         let mut release_tags = Vec::new();
@@ -61,6 +62,7 @@ impl SymbolsWriter {
         let mut is_latests = Vec::new();
 
         for record in &self.batch {
+            drivers.push(crate::models::driver_label(&record.registry, &record.name));
             names.push(record.name.clone());
             registries.push(record.registry.clone());
             release_tags.push(record.release_tag.clone());
@@ -77,6 +79,7 @@ impl SymbolsWriter {
         }
 
         let arrays = build_symbols_batch(SymbolsBatchData {
+            drivers,
             names,
             registries,
             release_tags,

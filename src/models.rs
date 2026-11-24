@@ -42,6 +42,17 @@ pub fn default_registry() -> String {
     DEFAULT_REGISTRY.to_string()
 }
 
+/// Display label that's unique per driver: the bare name for the public
+/// registry, "name (registry)" otherwise. Written to every parquet file as the
+/// `driver` column and used for dashboard chart labels.
+pub fn driver_label(registry: &str, name: &str) -> String {
+    if registry == DEFAULT_REGISTRY {
+        name.to_string()
+    } else {
+        format!("{name} ({registry})")
+    }
+}
+
 impl DriverConfig {
 
     /// Check if an artifact filename matches the filter patterns.
@@ -461,5 +472,11 @@ mod tests {
         assert!(config.matches_artifact("anything.zip"));
         assert!(config.matches_artifact("libduckdb.so"));
         assert!(config.matches_artifact("random_file.txt"));
+    }
+
+    #[test]
+    fn test_driver_label() {
+        assert_eq!(driver_label("public", "oracle"), "oracle");
+        assert_eq!(driver_label("private", "oracle"), "oracle (private)");
     }
 }

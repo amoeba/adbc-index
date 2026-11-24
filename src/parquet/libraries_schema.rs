@@ -4,6 +4,7 @@ use std::sync::Arc;
 /// Create the Arrow schema for library records (one row per shared library)
 pub fn create_libraries_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
+        Field::new("driver", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("registry", DataType::Utf8, false),
         Field::new("release_tag", DataType::Utf8, false),
