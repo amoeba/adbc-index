@@ -34,8 +34,8 @@ Use `dbc search --json --pre` to get the authoritative list of drivers. Compare 
 
 `drivers.toml` is not limited to drivers on the ADBC driver registry, and
 drivers aren't necessarily sourced from where the registry gets them. As of
-2026-11-24, all 28 drivers from `dbc search --json --pre` are covered in
-`drivers.toml`.
+2026-11-25, all 30 entries from `dbc search --json --pre` (27 public, 3
+private) are covered in `drivers.toml`.
 
 A driver is identified by (registry, name), not name alone: `dbc search
 --json --pre` lists `oracle` twice, once without a `registry` field (public)
@@ -50,6 +50,9 @@ Private GitHub repos (`db2`, `oracle-legacy`, `sap-hana`, `teradata`) work
 because downloads go through the API asset URL with `GITHUB_TOKEN`; the token
 needs read access to them. Their `browser_download_url`s 404 without auth.
 
+- `kinetica` — `adbc-drivers/kinetica`, Rust (by Kinetica DB, Inc.), tags are
+  `rust/vX.Y.Z`, added at `v7.2.1`. Exports 10 `Adbc*` symbols, same as the
+  other Rust drivers.
 - `mariadb` — `adbc-drivers/mariadb`, Go, tags are `go/vX.Y.Z`.
 - `motherduck` — `adbc-drivers/motherduck`, C++, only `v0.1.0-alpha.1`
   (pre-release) at time of adding.

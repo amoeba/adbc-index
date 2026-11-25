@@ -51,6 +51,10 @@ language = "c++"
 urls = ["https://pypi.org/project/adbc-driver-flightsql/"]
 language = "go"
 
+[drivers.kinetica]
+urls = ["https://github.com/adbc-drivers/kinetica"]
+language = "rust"
+
 [drivers.mariadb]
 urls = ["https://github.com/adbc-drivers/mariadb"]
 language = "go"
