@@ -95,9 +95,6 @@ The `extract_tar_gz` helper in `src/download/manager.rs` was unpacking every `.t
 
 This freed ~11 GB of stray extracted files from the cache (27 GB → 16 GB).
 
-Drivers in `drivers.toml` **not in the `dbc` registry** (even with `--pre`):
-- `athena` — `dbc info athena` returns "not found". Keep in `drivers.toml` for now since we have cached releases; investigate whether it was renamed or removed from the registry.
-
 ### Private registry drivers
 
 `oracle`, `sap-hana`, and `teradata` show `"registry":"private"` in `dbc search`. We can still
