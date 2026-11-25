@@ -1,7 +1,7 @@
 name: Check for New DBC Drivers
 
 # Maintains at most one open PR (on a fixed branch) listing drivers that
-# appear in `dbc search` but are missing from drivers.toml. The PR is updated
+# appear in `dbc search --pre` but are missing from drivers.toml. The PR is updated
 # in place when the set of missing drivers changes, left alone when it hasn't,
 # and closed automatically once drivers.toml covers everything.
 
@@ -33,7 +33,7 @@ jobs:
 
       - name: Get current driver list
         run: |
-          dbc search | awk 'NF {print $1}' | sort -u > /tmp/current-drivers.txt
+          dbc search --pre | awk 'NF {print $1}' | sort -u > /tmp/current-drivers.txt
           cat /tmp/current-drivers.txt
 
       - name: Check for new drivers
@@ -70,7 +70,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr close "${{ steps.pr.outputs.number }}" --delete-branch \
-            --comment "All drivers from \`dbc search\` are now present in \`drivers.toml\`; closing automatically."
+            --comment "All drivers from \`dbc search --pre\` are now present in \`drivers.toml\`; closing automatically."
 
       - name: Open or update bot PR
         if: steps.diff.outputs.list != ''
@@ -101,7 +101,7 @@ jobs:
           git commit -m "Add stub entries for new DBC drivers: $NEW_LIST"
           git push --force origin "$BRANCH"
 
-          BODY="The following drivers appeared in \`dbc search\` but are missing from \`drivers.toml\`. Stub entries have been added — fill in the source URLs before merging (or add the drivers on \`main\` and this PR will close itself).
+          BODY="The following drivers appeared in \`dbc search --pre\` but are missing from \`drivers.toml\`. Stub entries have been added — fill in the source URLs before merging (or add the drivers on \`main\` and this PR will close itself).
 
           $(sed 's/^/- /' /tmp/new-drivers.txt)
 
